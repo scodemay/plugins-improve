@@ -1,0 +1,13 @@
+apiVersion: kubescheduler.config.k8s.io/v1
+kind: KubeSchedulerConfiguration
+leaderElection:
+  leaderElect: false
+clientConnection:
+  kubeconfig: "REPLACE_ME_WITH_KUBE_CONFIG_PATH"
+profiles:
+  - schedulerName: hello-scheduler
+    plugins:
+      score:
+        enabled:
+        - name: HelloScheduler
+          weight: 100

@@ -19,6 +19,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"errors"
+	"path/filepath"
 )
 
 // TLSStat struct represents data in /proc/net/tls_stat.
@@ -51,6 +53,32 @@ type TLSStat struct {
 }
 
 // NewTLSStat reads the tls_stat statistics.
+// 
+
+var (
+	// DefaultMountPoint 定义默认的挂载点路径
+	DefaultMountPoint = "/proc"
+	// ErrFileParse 是一个通用的文件解析错误
+	ErrFileParse = errors.New("file parse error")
+)
+
+// FS 表示文件系统路径的抽象
+type FS struct {
+	proc string
+}
+
+// NewFS 创建一个新的 FS 实例
+func NewFS(mountPoint string) (FS, error) {
+	if mountPoint == "" {
+		mountPoint = DefaultMountPoint
+	}
+	return FS{proc: mountPoint}, nil
+}
+
+// Path 拼接文件路径
+func (fs FS) Path(subPath string) string {
+	return filepath.Join(fs.proc, subPath)
+}
 func NewTLSStat() (TLSStat, error) {
 	fs, err := NewFS(DefaultMountPoint)
 	if err != nil {
@@ -60,9 +88,10 @@ func NewTLSStat() (TLSStat, error) {
 	return fs.NewTLSStat()
 }
 
+
 // NewTLSStat reads the tls_stat statistics.
 func (fs FS) NewTLSStat() (TLSStat, error) {
-	file, err := os.Open(fs.proc.Path("net/tls_stat"))
+	file, err := os.Open(fs.Path("net/tls_stat"))
 	if err != nil {
 		return TLSStat{}, err
 	}
