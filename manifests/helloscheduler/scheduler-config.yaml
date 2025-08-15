@@ -3,11 +3,11 @@ kind: KubeSchedulerConfiguration
 leaderElection:
   leaderElect: false
 clientConnection:
-  kubeconfig: "REPLACE_ME_WITH_KUBE_CONFIG_PATH"
+  kubeconfig: "/home/chenyu/.kube/config"
 profiles:
   - schedulerName: hello-scheduler
     plugins:
       score:
         enabled:
-        - name: HelloScheduler
+        - name: TinyScheduler
           weight: 100

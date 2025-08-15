@@ -38,7 +38,7 @@ import (
 	"sigs.k8s.io/scheduler-plugins/pkg/trimaran/lowriskovercommitment"
 	"sigs.k8s.io/scheduler-plugins/pkg/trimaran/peaks"
 	"sigs.k8s.io/scheduler-plugins/pkg/trimaran/targetloadpacking"
-	"sigs.k8s.io/scheduler-plugins/pkg/helloscheduler"
+	"sigs.k8s.io/scheduler-plugins/pkg/Tinyscheduler"
 
 	// Ensure scheme package is initialized.
 	_ "sigs.k8s.io/scheduler-plugins/apis/config/scheme"
@@ -51,7 +51,7 @@ func main() {
 	command := app.NewSchedulerCommand(
 		app.WithPlugin(capacityscheduling.Name, capacityscheduling.New),
 		app.WithPlugin(coscheduling.Name, coscheduling.New),
-		app.WithPlugin(helloscheduler.Name, helloscheduler.New),
+		app.WithPlugin(Tinyscheduler.Name, Tinyscheduler.New),
 		app.WithPlugin(loadvariationriskbalancing.Name, loadvariationriskbalancing.New),
 		app.WithPlugin(networkoverhead.Name, networkoverhead.New),
 		app.WithPlugin(topologicalsort.Name, topologicalsort.New),

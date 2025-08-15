@@ -1,69 +1,43 @@
-/*
-Copyright 2024 The Kubernetes Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
-package helloscheduler
+package Tinyscheduler
 
 import (
 	"context"
 	"fmt"
 	"math"
 
-	v1 "k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1" 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
-// HelloScheduler 是一个简单的调度插件示例
-// 它会根据节点名称的字母顺序给节点打分
-type HelloScheduler struct {
-	handle framework.Handle
-	logger klog.Logger
+//定义一个结构体，将插件所用信息、依赖封装，便于管理
+type TinyScheduler struct {
+	handle framework.Handle //是一个提供与整个kubernetes框架交互的接口，可获得信息、状态、与其他组件通信的作用
+	logger klog.Logger //用于记录日志信息
 }
 
-// 确保HelloScheduler实现了ScorePlugin接口
-var _ framework.ScorePlugin = &HelloScheduler{}
+// 确保TinyScheduler实现了ScorePlugin接口
+var _ framework.ScorePlugin = &TinyScheduler{} //惯用写法，用来类型检查
 
 // Name 是插件在注册表和配置中使用的名称
-const Name = "HelloScheduler"
+const Name = "TinyScheduler"
 
 // Name 返回插件的名称
-func (hs *HelloScheduler) Name() string {
+func (hs *TinyScheduler) Name() string {
 	return Name
 }
 
 // Score 在Score扩展点被调用
 // 这个函数会为每个节点计算一个分数
-func (hs *HelloScheduler) Score(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) (int64, *framework.Status) {
+func (hs *TinyScheduler) Score(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) (int64, *framework.Status) {
 	nodeName := nodeInfo.Node().Name
 
 	// 记录日志，显示我们正在为哪个Pod和节点计算分数
-	hs.logger.Info("HelloScheduler正在计算分数",
+	hs.logger.Info("TinyScheduler正在计算分数",
 		"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
 		"node", nodeName)
-
-	// 简单的评分策略：根据节点名称的字母顺序
-	// 节点名称越靠前（字母顺序），分数越高
-	score := int64(0)
-	if len(nodeName) > 0 {
-		// 使用节点名称第一个字符的ASCII值的反向来计算分数
-		// 'a'(97) -> 高分, 'z'(122) -> 低分
-		firstChar := nodeName[0]
-		score = int64(150 - firstChar) // 这样'a'开头的节点会得到较高分数
-	}
+	
 
 	// 添加节点资源状态的考虑
 	// 如果节点有足够的可用资源，给额外的分数
@@ -74,15 +48,23 @@ func (hs *HelloScheduler) Score(ctx context.Context, state *framework.CycleState
 	cpuUsageRatio := float64(requested.MilliCPU) / float64(allocatable.MilliCPU)
 	memUsageRatio := float64(requested.Memory) / float64(allocatable.Memory)
 
+	podCount := len(nodeInfo.Pods)
+	loadBalanceScore := int64(110 - podCount*10)
+
+	if loadBalanceScore < 0 {
+		loadBalanceScore = 0
+	}
+
 	// 资源使用率越低，分数越高
 	resourceScore := int64((2.0 - cpuUsageRatio - memUsageRatio) * 50)
 
-	finalScore := score + resourceScore
+	finalScore := resourceScore +loadBalanceScore
 
-	hs.logger.Info("HelloScheduler计算完成",
+	hs.logger.Info("TinyScheduler计算完成",
 		"node", nodeName,
-		"nameScore", score,
 		"resourceScore", resourceScore,
+		"loadBalanceScore", loadBalanceScore,
+		"podCount", podCount,
 		"finalScore", finalScore,
 		"cpuUsage", fmt.Sprintf("%.2f%%", cpuUsageRatio*100),
 		"memUsage", fmt.Sprintf("%.2f%%", memUsageRatio*100))
@@ -91,12 +73,12 @@ func (hs *HelloScheduler) Score(ctx context.Context, state *framework.CycleState
 }
 
 // ScoreExtensions 返回ScoreExtensions接口
-func (hs *HelloScheduler) ScoreExtensions() framework.ScoreExtensions {
+func (hs *TinyScheduler) ScoreExtensions() framework.ScoreExtensions {
 	return hs
 }
 
 // NormalizeScore 标准化分数到框架要求的范围内 [0, 100]
-func (hs *HelloScheduler) NormalizeScore(ctx context.Context, state *framework.CycleState, pod *v1.Pod, scores framework.NodeScoreList) *framework.Status {
+func (hs *TinyScheduler) NormalizeScore(ctx context.Context, state *framework.CycleState, pod *v1.Pod, scores framework.NodeScoreList) *framework.Status {
 	// 找到最高分和最低分
 	var highest int64 = -math.MaxInt64
 	var lowest int64 = math.MaxInt64
@@ -139,10 +121,10 @@ func (hs *HelloScheduler) NormalizeScore(ctx context.Context, state *framework.C
 
 // New 初始化一个新的插件实例并返回
 func New(ctx context.Context, obj runtime.Object, h framework.Handle) (framework.Plugin, error) {
-	logger := klog.FromContext(ctx).WithName("HelloScheduler")
-	logger.Info("HelloScheduler插件正在初始化")
+	logger := klog.FromContext(ctx).WithName("TinyScheduler")
+	logger.Info("TinyScheduler插件正在初始化")
 
-	return &HelloScheduler{
+	return &TinyScheduler{
 		handle: h,
 		logger: logger,
 	}, nil
