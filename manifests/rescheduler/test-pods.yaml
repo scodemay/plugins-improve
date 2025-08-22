@@ -1,0 +1,154 @@
+# 测试Pod配置文件 - 用于验证重调度功能
+
+---
+# 高优先级Pod - 不应被重调度
+apiVersion: v1
+kind: Pod
+metadata:
+  name: high-priority-pod
+  namespace: default
+  labels:
+    app: test-rescheduler
+    priority: high
+spec:
+  schedulerName: rescheduler-scheduler
+  priority: 1000
+  containers:
+  - name: nginx
+    image: nginx:1.20
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+    ports:
+    - containerPort: 80
+
+---
+# 普通优先级Pod - 可以被重调度
+apiVersion: v1
+kind: Pod
+metadata:
+  name: normal-priority-pod-1
+  namespace: default
+  labels:
+    app: test-rescheduler
+    priority: normal
+spec:
+  schedulerName: rescheduler-scheduler
+  containers:
+  - name: nginx
+    image: nginx:1.20
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+    ports:
+    - containerPort: 80
+
+---
+# 普通优先级Pod - 可以被重调度
+apiVersion: v1
+kind: Pod
+metadata:
+  name: normal-priority-pod-2
+  namespace: default
+  labels:
+    app: test-rescheduler
+    priority: normal
+spec:
+  schedulerName: rescheduler-scheduler
+  containers:
+  - name: nginx
+    image: nginx:1.20
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+    ports:
+    - containerPort: 80
+
+---
+# 普通优先级Pod - 可以被重调度
+apiVersion: v1
+kind: Pod
+metadata:
+  name: normal-priority-pod-3
+  namespace: default
+  labels:
+    app: test-rescheduler
+    priority: normal
+spec:
+  schedulerName: rescheduler-scheduler
+  containers:
+  - name: nginx
+    image: nginx:1.20
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+    ports:
+    - containerPort: 80
+
+---
+# 排除重调度的Pod
+apiVersion: v1
+kind: Pod
+metadata:
+  name: excluded-pod
+  namespace: default
+  labels:
+    app: test-rescheduler
+    priority: normal
+    scheduler.alpha.kubernetes.io/rescheduling: "disabled"
+spec:
+  schedulerName: rescheduler-scheduler
+  containers:
+  - name: nginx
+    image: nginx:1.20
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+    ports:
+    - containerPort: 80
+
+---
+# 资源密集型Pod - 用于测试资源优化重调度
+apiVersion: v1
+kind: Pod
+metadata:
+  name: resource-intensive-pod
+  namespace: default
+  labels:
+    app: test-rescheduler
+    priority: normal
+    type: resource-intensive
+spec:
+  schedulerName: rescheduler-scheduler
+  containers:
+  - name: stress
+    image: nginx:1.20
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+    ports:
+    - containerPort: 80

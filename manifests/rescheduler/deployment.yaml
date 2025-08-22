@@ -1,0 +1,194 @@
+# 重调度器部署配置文件
+
+---
+# ServiceAccount
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rescheduler-scheduler
+  namespace: kube-system
+
+---
+# ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rescheduler-scheduler
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch", "update"]
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["endpoints"]
+  verbs: ["create", "get", "update"]
+- apiGroups: ["apps"]
+  resources: ["replicasets", "deployments"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["policy"]
+  resources: ["poddisruptionbudgets"]
+  verbs: ["get", "list", "watch"]
+
+---
+# ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rescheduler-scheduler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rescheduler-scheduler
+subjects:
+- kind: ServiceAccount
+  name: rescheduler-scheduler
+  namespace: kube-system
+
+---
+# ConfigMap for scheduler configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rescheduler-config
+  namespace: kube-system
+data:
+  config.yaml: |
+    apiVersion: kubescheduler.config.k8s.io/v1
+    kind: KubeSchedulerConfiguration
+    leaderElection:
+      leaderElect: true
+      leaseDuration: 15s
+      renewDeadline: 10s
+      retryPeriod: 2s
+      resourceLock: leases
+      resourceNamespace: kube-system
+      resourceName: rescheduler-scheduler
+    clientConnection:
+      kubeconfig: ""
+    profiles:
+      - schedulerName: rescheduler-scheduler
+        plugins:
+          # Rescheduler插件在后台运行，不需要特定的调度扩展点
+        pluginConfig:
+          - name: Rescheduler
+            args:
+              # 重调度间隔时间
+              reschedulingInterval: "30s"
+              
+              # 启用的重调度策略
+              enabledStrategies:
+                - "LoadBalancing"         # 负载均衡
+                - "ResourceOptimization"  # 资源优化
+                - "NodeMaintenance"       # 节点维护
+              
+              # 资源使用率阈值 (%)
+              cpuThreshold: 80.0
+              memoryThreshold: 80.0
+              
+              # 负载不均衡阈值 (%)
+              imbalanceThreshold: 20.0
+              
+              # 单次重调度最大Pod数量
+              maxReschedulePods: 10
+              
+              # 排除的命名空间
+              excludedNamespaces:
+                - "kube-system"
+                - "kube-public"
+                - "kube-node-lease"
+
+---
+# Deployment for Rescheduler Scheduler
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rescheduler-scheduler
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rescheduler-scheduler
+  template:
+    metadata:
+      labels:
+        app: rescheduler-scheduler
+    spec:
+      serviceAccountName: rescheduler-scheduler
+      containers:
+      - name: kube-scheduler
+        image: scheduler-plugins:latest  # 需要构建包含重调度器的镜像
+        imagePullPolicy: IfNotPresent
+        command:
+        - /usr/local/bin/kube-scheduler
+        args:
+        - --config=/etc/kubernetes/scheduler-config.yaml
+        - --v=2
+        - --leader-elect=true
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        volumeMounts:
+        - name: config
+          mountPath: /etc/kubernetes
+          readOnly: true
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 10259
+            scheme: HTTPS
+          initialDelaySeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 10259
+            scheme: HTTPS
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65534  # nobody user
+      volumes:
+      - name: config
+        configMap:
+          name: rescheduler-config
+      tolerations:
+      - key: "node-role.kubernetes.io/master"
+        operator: "Equal"
+        effect: "NoSchedule"
+      - key: "node-role.kubernetes.io/control-plane"
+        operator: "Equal"
+        effect: "NoSchedule"
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      priorityClassName: system-cluster-critical
+
+---
+# Service for monitoring (optional)
+apiVersion: v1
+kind: Service
+metadata:
+  name: rescheduler-scheduler-metrics
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+spec:
+  selector:
+    app: rescheduler-scheduler
+  ports:
+  - name: https-metrics
+    port: 10259
+    targetPort: 10259
+    protocol: TCP
