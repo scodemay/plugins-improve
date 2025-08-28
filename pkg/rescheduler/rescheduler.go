@@ -1,19 +1,3 @@
-/*
-Copyright 2024 The Kubernetes Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package rescheduler
 
 import (
@@ -24,7 +8,6 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -87,6 +70,9 @@ type Rescheduler struct {
 	podLister  corelisters.PodLister
 	nodeLister corelisters.NodeLister
 
+	// 重调度控制器 - 负责执行实际的Pod迁移
+	controller *ReschedulerController
+
 	// 停止信号
 	stopCh chan struct{}
 }
@@ -105,6 +91,8 @@ type NodeResourceUsage struct {
 	Node               *v1.Node
 	CPUUsagePercent    float64
 	MemoryUsagePercent float64
+	CPURequests        int64 // 累计CPU请求量 (毫核)
+	MemoryRequests     int64 // 累计内存请求量 (字节)
 	PodCount           int
 	Score              float64
 }
@@ -135,6 +123,12 @@ func New(ctx context.Context, obj runtime.Object, h framework.Handle) (framework
 
 	// TODO: 从obj中解析实际配置
 
+	// 创建重调度控制器
+	controller := NewReschedulerController(
+		h.ClientSet(),
+		h.SharedInformerFactory(),
+	)
+
 	rescheduler := &Rescheduler{
 		logger:     logger,
 		handle:     h,
@@ -142,8 +136,16 @@ func New(ctx context.Context, obj runtime.Object, h framework.Handle) (framework
 		clientset:  h.ClientSet(),
 		podLister:  h.SharedInformerFactory().Core().V1().Pods().Lister(),
 		nodeLister: h.SharedInformerFactory().Core().V1().Nodes().Lister(),
+		controller: controller,
 		stopCh:     make(chan struct{}),
 	}
+
+	// 启动重调度控制器
+	go func() {
+		if err := controller.Run(ctx, 2); err != nil {
+			logger.Error(err, "重调度控制器运行失败")
+		}
+	}()
 
 	// 启动重调度器控制循环
 	go rescheduler.run(ctx)
@@ -202,10 +204,10 @@ func (r *Rescheduler) performRescheduling(ctx context.Context) error {
 		allDecisions = allDecisions[:r.config.MaxReschedulePods]
 	}
 
-	// 执行重调度决策
+	// 执行重调度决策 - 通过控制器执行
 	for _, decision := range allDecisions {
-		if err := r.executeMigration(ctx, decision); err != nil {
-			r.logger.Error(err, "执行Pod迁移失败",
+		if err := r.controller.ExecuteMigration(ctx, decision); err != nil {
+			r.logger.Error(err, "提交Pod迁移任务失败",
 				"pod", fmt.Sprintf("%s/%s", decision.Pod.Namespace, decision.Pod.Name),
 				"sourceNode", decision.SourceNode,
 				"targetNode", decision.TargetNode)
@@ -256,10 +258,12 @@ func (r *Rescheduler) calculateNodeUsages(nodes []*v1.Node, pods []*v1.Pod) map[
 		// 计算资源请求
 		for _, container := range pod.Spec.Containers {
 			if cpu := container.Resources.Requests.Cpu(); cpu != nil {
-				// TODO: 累加CPU请求
+				// 累加CPU请求 (转换为毫核)
+				usage.CPURequests += cpu.MilliValue()
 			}
 			if memory := container.Resources.Requests.Memory(); memory != nil {
-				// TODO: 累加内存请求
+				// 累加内存请求 (单位为字节)
+				usage.MemoryRequests += memory.Value()
 			}
 		}
 	}
@@ -273,10 +277,17 @@ func (r *Rescheduler) calculateNodeUsages(nodes []*v1.Node, pods []*v1.Pod) map[
 		memCapacity := node.Status.Capacity.Memory()
 
 		if cpuCapacity != nil && memCapacity != nil {
-			// TODO: 实现精确的资源使用率计算
-			// 这里使用简化的计算方式
-			usage.CPUUsagePercent = float64(usage.PodCount) * 10.0   // 简化计算
-			usage.MemoryUsagePercent = float64(usage.PodCount) * 8.0 // 简化计算
+			// 计算实际的资源使用率
+			cpuCapacityMilliValue := cpuCapacity.MilliValue()
+			memCapacityValue := memCapacity.Value()
+
+			if cpuCapacityMilliValue > 0 {
+				usage.CPUUsagePercent = float64(usage.CPURequests) / float64(cpuCapacityMilliValue) * 100.0
+			}
+
+			if memCapacityValue > 0 {
+				usage.MemoryUsagePercent = float64(usage.MemoryRequests) / float64(memCapacityValue) * 100.0
+			}
 
 			// 计算综合分数 (使用率越低分数越高)
 			usage.Score = 200.0 - usage.CPUUsagePercent - usage.MemoryUsagePercent
@@ -487,66 +498,24 @@ func (r *Rescheduler) isExcludedNamespace(namespace string) bool {
 	return false
 }
 
-// executeMigration 执行Pod迁移
-func (r *Rescheduler) executeMigration(ctx context.Context, decision ReschedulingDecision) error {
-	r.logger.Info("开始执行Pod迁移",
+// executeMigration 已弃用：现在通过控制器执行Pod迁移
+// 保留此方法以兼容现有接口，但实际迁移逻辑已移至ReschedulerController
+/*func (r *Rescheduler) executeMigration(ctx context.Context, decision ReschedulingDecision) error {
+	r.logger.Info("重定向到控制器执行Pod迁移",
 		"pod", fmt.Sprintf("%s/%s", decision.Pod.Namespace, decision.Pod.Name),
 		"sourceNode", decision.SourceNode,
 		"targetNode", decision.TargetNode,
 		"reason", decision.Reason,
 		"strategy", decision.Strategy)
 
-	// 1. 创建Pod的副本到目标节点
-	newPod := decision.Pod.DeepCopy()
-	newPod.ResourceVersion = ""
-	newPod.UID = ""
-	newPod.Name = fmt.Sprintf("%s-migrated-%d", decision.Pod.Name, time.Now().Unix())
-	newPod.Spec.NodeName = decision.TargetNode
-	newPod.Status = v1.PodStatus{}
-
-	// 添加迁移标签
-	if newPod.Labels == nil {
-		newPod.Labels = make(map[string]string)
-	}
-	newPod.Labels["scheduler.alpha.kubernetes.io/migrated-from"] = decision.SourceNode
-	newPod.Labels["scheduler.alpha.kubernetes.io/migration-reason"] = decision.Strategy
-
-	// 添加迁移注解
-	if newPod.Annotations == nil {
-		newPod.Annotations = make(map[string]string)
-	}
-	newPod.Annotations["scheduler.alpha.kubernetes.io/migration-time"] = time.Now().Format(time.RFC3339)
-	newPod.Annotations["scheduler.alpha.kubernetes.io/original-pod"] = string(decision.Pod.UID)
-
-	// 2. 创建新Pod
-	_, err := r.clientset.CoreV1().Pods(newPod.Namespace).Create(ctx, newPod, metav1.CreateOptions{})
-	if err != nil {
-		return fmt.Errorf("创建迁移Pod失败: %v", err)
-	}
-
-	r.logger.Info("成功创建迁移Pod", "newPod", fmt.Sprintf("%s/%s", newPod.Namespace, newPod.Name))
-
-	// 3. 等待新Pod运行，然后删除原Pod
-	// TODO: 实现更完善的等待和验证逻辑
-	go func() {
-		time.Sleep(30 * time.Second) // 等待30秒
-
-		// 删除原Pod
-		err := r.clientset.CoreV1().Pods(decision.Pod.Namespace).Delete(
-			context.Background(),
-			decision.Pod.Name,
-			metav1.DeleteOptions{})
-		if err != nil {
-			r.logger.Error(err, "删除原Pod失败", "pod", fmt.Sprintf("%s/%s", decision.Pod.Namespace, decision.Pod.Name))
-		} else {
-			r.logger.Info("成功删除原Pod", "pod", fmt.Sprintf("%s/%s", decision.Pod.Namespace, decision.Pod.Name))
-		}
-	}()
-
-	return nil
+	// 通过控制器执行迁移
+	return r.controller.ExecuteMigration(ctx, decision)
 }
-
+*/
 // Stop 停止重调度器
 func (r *Rescheduler) Stop() {
+	if r.controller != nil {
+		r.controller.Stop()
+	}
 	close(r.stopCh)
 }
