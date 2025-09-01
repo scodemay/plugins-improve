@@ -19,9 +19,18 @@ rules:
   resources: ["pods"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 - apiGroups: [""]
+  resources: ["pods/binding"]
+  verbs: ["create"]
+- apiGroups: [""]
+  resources: ["pods/status"] 
+  verbs: ["patch", "update"]
+- apiGroups: [""]
   resources: ["nodes"]
   verbs: ["get", "list", "watch"]
 - apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch", "update"]
+- apiGroups: ["events.k8s.io"]
   resources: ["events"]
   verbs: ["create", "patch", "update"]
 - apiGroups: ["coordination.k8s.io"]
@@ -31,10 +40,26 @@ rules:
   resources: ["endpoints"]
   verbs: ["create", "get", "update"]
 - apiGroups: ["apps"]
-  resources: ["replicasets", "deployments"]
+  resources: ["replicasets", "deployments", "statefulsets"]
   verbs: ["get", "list", "watch"]
 - apiGroups: ["policy"]
   resources: ["poddisruptionbudgets"]
+  verbs: ["get", "list", "watch"]
+
+# 添加Pod驱逐权限 - 修复驱逐失败问题
+- apiGroups: [""]
+  resources: ["pods/eviction"]
+  verbs: ["create"]
+# 添加调度器需要的额外权限
+- apiGroups: [""]
+  resources: ["namespaces", "services", "replicationcontrollers", "persistentvolumes", "persistentvolumeclaims"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  resourceNames: ["extension-apiserver-authentication"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["storage.k8s.io"]
+  resources: ["storageclasses", "volumeattachments", "csistoragecapacities", "csidrivers", "csinodes"]
   verbs: ["get", "list", "watch"]
 
 ---
@@ -76,34 +101,26 @@ data:
     profiles:
       - schedulerName: rescheduler-scheduler
         plugins:
-          # Rescheduler插件在后台运行，不需要特定的调度扩展点
+          # 在PreBind扩展点启用重调度器插件
+          preBind:
+            enabled:
+            - name: Rescheduler
         pluginConfig:
-          - name: Rescheduler
-            args:
-              # 重调度间隔时间
-              reschedulingInterval: "30s"
-              
-              # 启用的重调度策略
-              enabledStrategies:
-                - "LoadBalancing"         # 负载均衡
-                - "ResourceOptimization"  # 资源优化
-                - "NodeMaintenance"       # 节点维护
-              
-              # 资源使用率阈值 (%)
-              cpuThreshold: 80.0
-              memoryThreshold: 80.0
-              
-              # 负载不均衡阈值 (%)
-              imbalanceThreshold: 20.0
-              
-              # 单次重调度最大Pod数量
-              maxReschedulePods: 10
-              
-              # 排除的命名空间
-              excludedNamespaces:
-                - "kube-system"
-                - "kube-public"
-                - "kube-node-lease"
+        - name: Rescheduler
+          args:
+            reschedulingInterval: "30s"
+            enabledStrategies:
+              - "LoadBalancing"
+              - "ResourceOptimization"
+              - "NodeMaintenance"
+            cpuThreshold: 80.0
+            memoryThreshold: 80.0
+            imbalanceThreshold: 20.0
+            maxReschedulePods: 10
+            excludedNamespaces:
+              - "kube-system"
+              - "kube-public"
+              - "kube-node-lease"
 
 ---
 # Deployment for Rescheduler Scheduler
@@ -127,12 +144,12 @@ spec:
       serviceAccountName: rescheduler-scheduler
       containers:
       - name: kube-scheduler
-        image: scheduler-plugins:latest  # 需要构建包含重调度器的镜像
-        imagePullPolicy: IfNotPresent
+        image: scheduler-plugins:latest  # 使用本地构建的镜像
+        imagePullPolicy: Never  # 强制使用本地镜像，不从远程拉取
         command:
-        - /usr/local/bin/kube-scheduler
+        - /bin/kube-scheduler
         args:
-        - --config=/etc/kubernetes/scheduler-config.yaml
+        - --config=/etc/kubernetes/config.yaml
         - --v=2
         - --leader-elect=true
         resources:

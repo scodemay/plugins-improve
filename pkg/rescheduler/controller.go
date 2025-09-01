@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
 	clientset "k8s.io/client-go/kubernetes"
+	appslisters "k8s.io/client-go/listers/apps/v1"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	policylisters "k8s.io/client-go/listers/policy/v1"
 	"k8s.io/client-go/tools/cache"
@@ -63,6 +64,7 @@ type ReschedulerController struct {
 	// Listers
 	podLister corelisters.PodLister
 	pdbLister policylisters.PodDisruptionBudgetLister
+	rsLister  appslisters.ReplicaSetLister
 
 	// Informers
 	podInformer cache.SharedIndexInformer
@@ -105,6 +107,7 @@ func NewReschedulerController(
 		clientset:   clientset,
 		podLister:   informerFactory.Core().V1().Pods().Lister(),
 		pdbLister:   informerFactory.Policy().V1().PodDisruptionBudgets().Lister(),
+		rsLister:    informerFactory.Apps().V1().ReplicaSets().Lister(),
 		podInformer: podInformer,
 		workqueue:   workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), ControllerName),
 		stopCh:      make(chan struct{}),
@@ -315,34 +318,72 @@ func (c *ReschedulerController) checkPodDisruptionBudget(_ context.Context, pod 
 	return nil
 }
 
-// markPodForMigration 为Pod添加迁移标签
+// markPodForMigration 为Pod添加迁移标签 - 改进版避免竞态条件
 func (c *ReschedulerController) markPodForMigration(ctx context.Context, pod *v1.Pod, migrationID, status string) error {
-	podCopy := pod.DeepCopy()
+	// 使用重试机制避免 "object has been modified" 错误
+	return retry(3, 1*time.Second, func() error {
+		// 获取最新的Pod状态
+		latestPod, err := c.clientset.CoreV1().Pods(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
 
-	if podCopy.Labels == nil {
-		podCopy.Labels = make(map[string]string)
+		podCopy := latestPod.DeepCopy()
+
+		if podCopy.Labels == nil {
+			podCopy.Labels = make(map[string]string)
+		}
+
+		podCopy.Labels[MigrationIDLabel] = migrationID
+		podCopy.Labels[MigrationStatusLabel] = status
+
+		if podCopy.Annotations == nil {
+			podCopy.Annotations = make(map[string]string)
+		}
+		podCopy.Annotations["scheduler.alpha.kubernetes.io/migration-time"] = time.Now().Format(time.RFC3339)
+
+		// 添加防冲突标记
+		podCopy.Annotations["scheduler.alpha.kubernetes.io/rescheduler-processing"] = "true"
+
+		_, err = c.clientset.CoreV1().Pods(pod.Namespace).Update(ctx, podCopy, metav1.UpdateOptions{})
+		return err
+	})
+}
+
+// retry 重试机制
+func retry(attempts int, sleep time.Duration, f func() error) error {
+	var err error
+	for i := 0; i < attempts; i++ {
+		err = f()
+		if err == nil {
+			return nil
+		}
+		if i < attempts-1 {
+			time.Sleep(sleep)
+		}
 	}
-
-	podCopy.Labels[MigrationIDLabel] = migrationID
-	podCopy.Labels[MigrationStatusLabel] = status
-
-	if podCopy.Annotations == nil {
-		podCopy.Annotations = make(map[string]string)
-	}
-	podCopy.Annotations["scheduler.alpha.kubernetes.io/migration-time"] = time.Now().Format(time.RFC3339)
-
-	_, err := c.clientset.CoreV1().Pods(pod.Namespace).Update(ctx, podCopy, metav1.UpdateOptions{})
 	return err
 }
 
-// createTargetPod 在目标节点创建新Pod
+// createTargetPod 在目标节点创建新Pod - 改进版避免与Deployment冲突
 func (c *ReschedulerController) createTargetPod(ctx context.Context, decision ReschedulingDecision, migrationID string) (*v1.Pod, error) {
 	newPod := decision.Pod.DeepCopy()
 
 	// 清除运行时字段
 	newPod.ResourceVersion = ""
 	newPod.UID = ""
-	newPod.Name = fmt.Sprintf("%s-migrated-%s", decision.Pod.Name, migrationID[10:20]) // 取部分ID
+
+	// 改进命名策略：避免与Deployment Controller冲突
+	// 检查是否为Deployment管理的Pod
+	isDeploymentPod := c.isDeploymentManagedPod(decision.Pod)
+	if isDeploymentPod {
+		// 对Deployment管理的Pod使用不同的命名模式
+		newPod.Name = fmt.Sprintf("rescheduled-%s-%s", decision.Pod.Name, migrationID[10:20])
+	} else {
+		// 独立Pod使用原有命名
+		newPod.Name = fmt.Sprintf("%s-migrated-%s", decision.Pod.Name, migrationID[10:20])
+	}
+
 	newPod.Spec.NodeName = decision.TargetNode
 	newPod.Status = v1.PodStatus{}
 
@@ -376,6 +417,26 @@ func (c *ReschedulerController) createTargetPod(ctx context.Context, decision Re
 		"migrationID", migrationID)
 
 	return createdPod, nil
+}
+
+// isDeploymentManagedPod 检查Pod是否由Deployment管理
+func (c *ReschedulerController) isDeploymentManagedPod(pod *v1.Pod) bool {
+	// 检查Pod的OwnerReferences
+	for _, ownerRef := range pod.GetOwnerReferences() {
+		if ownerRef.Kind == "ReplicaSet" && ownerRef.APIVersion == "apps/v1" {
+			// 进一步检查ReplicaSet是否由Deployment管理
+			rs, err := c.rsLister.ReplicaSets(pod.Namespace).Get(ownerRef.Name)
+			if err != nil {
+				continue
+			}
+			for _, rsOwnerRef := range rs.GetOwnerReferences() {
+				if rsOwnerRef.Kind == "Deployment" && rsOwnerRef.APIVersion == "apps/v1" {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // waitAndEvictSourcePod 等待新Pod运行后驱逐源Pod

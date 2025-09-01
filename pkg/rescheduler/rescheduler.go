@@ -29,9 +29,9 @@ const (
 
 	// 默认配置
 	DefaultReschedulingInterval = 30 * time.Second
-	DefaultCPUThreshold         = 80.0
-	DefaultMemoryThreshold      = 80.0
-	DefaultImbalanceThreshold   = 20.0
+	DefaultCPUThreshold         = 10.0 // 降低到10%，更容易触发
+	DefaultMemoryThreshold      = 20.0 // 降低到20%
+	DefaultImbalanceThreshold   = 5.0  // 降低到5%，更敏感
 )
 
 // ReschedulerConfig 重调度器配置
@@ -73,6 +73,9 @@ type Rescheduler struct {
 	// 重调度控制器 - 负责执行实际的Pod迁移
 	controller *ReschedulerController
 
+	// Deployment协调器 - 避免与Deployment Controller冲突
+	deploymentCoordinator *DeploymentCoordinator
+
 	// 停止信号
 	stopCh chan struct{}
 }
@@ -99,6 +102,7 @@ type NodeResourceUsage struct {
 
 // 确保Rescheduler实现了相关接口
 var _ framework.Plugin = &Rescheduler{}
+var _ framework.PreBindPlugin = &Rescheduler{}
 
 // Name 返回插件名称
 func (r *Rescheduler) Name() string {
@@ -129,15 +133,24 @@ func New(ctx context.Context, obj runtime.Object, h framework.Handle) (framework
 		h.SharedInformerFactory(),
 	)
 
+	// 创建Deployment协调器
+	deploymentCoordinator := NewDeploymentCoordinator(
+		h.ClientSet(),
+		h.SharedInformerFactory().Apps().V1().Deployments().Lister(),
+		h.SharedInformerFactory().Apps().V1().ReplicaSets().Lister(),
+		h.SharedInformerFactory().Core().V1().Pods().Lister(),
+	)
+
 	rescheduler := &Rescheduler{
-		logger:     logger,
-		handle:     h,
-		config:     config,
-		clientset:  h.ClientSet(),
-		podLister:  h.SharedInformerFactory().Core().V1().Pods().Lister(),
-		nodeLister: h.SharedInformerFactory().Core().V1().Nodes().Lister(),
-		controller: controller,
-		stopCh:     make(chan struct{}),
+		logger:                logger,
+		handle:                h,
+		config:                config,
+		clientset:             h.ClientSet(),
+		podLister:             h.SharedInformerFactory().Core().V1().Pods().Lister(),
+		nodeLister:            h.SharedInformerFactory().Core().V1().Nodes().Lister(),
+		controller:            controller,
+		deploymentCoordinator: deploymentCoordinator,
+		stopCh:                make(chan struct{}),
 	}
 
 	// 启动重调度控制器
@@ -199,18 +212,40 @@ func (r *Rescheduler) performRescheduling(ctx context.Context) error {
 		}
 	}
 
+	// 调试：输出决策数量
+	r.logger.Info("重调度决策生成", "决策数量", len(allDecisions), "最大重调度数量", r.config.MaxReschedulePods)
+
 	// 限制重调度数量
 	if len(allDecisions) > r.config.MaxReschedulePods {
 		allDecisions = allDecisions[:r.config.MaxReschedulePods]
 	}
 
-	// 执行重调度决策 - 通过控制器执行
+	// 执行重调度决策 - 使用协调机制避免冲突
 	for _, decision := range allDecisions {
-		if err := r.controller.ExecuteMigration(ctx, decision); err != nil {
-			r.logger.Error(err, "提交Pod迁移任务失败",
-				"pod", fmt.Sprintf("%s/%s", decision.Pod.Namespace, decision.Pod.Name),
-				"sourceNode", decision.SourceNode,
-				"targetNode", decision.TargetNode)
+		// 优先使用Deployment协调器，回退到原有控制器
+		r.logger.Info("检查协调器状态", "deploymentCoordinator", r.deploymentCoordinator != nil)
+		if r.deploymentCoordinator != nil {
+			r.logger.Info("启用协调重调度", "pod", fmt.Sprintf("%s/%s", decision.Pod.Namespace, decision.Pod.Name))
+			err := r.deploymentCoordinator.CoordinatedRescheduling(ctx, decision)
+			if err != nil {
+				r.logger.Error(err, "协调重调度失败，回退到原有机制",
+					"pod", fmt.Sprintf("%s/%s", decision.Pod.Namespace, decision.Pod.Name))
+				// 回退到原有机制
+				if err := r.controller.ExecuteMigration(ctx, decision); err != nil {
+					r.logger.Error(err, "提交Pod迁移任务失败",
+						"pod", fmt.Sprintf("%s/%s", decision.Pod.Namespace, decision.Pod.Name),
+						"sourceNode", decision.SourceNode,
+						"targetNode", decision.TargetNode)
+				}
+			}
+		} else {
+			// 没有协调器时使用原有机制
+			if err := r.controller.ExecuteMigration(ctx, decision); err != nil {
+				r.logger.Error(err, "提交Pod迁移任务失败",
+					"pod", fmt.Sprintf("%s/%s", decision.Pod.Namespace, decision.Pod.Name),
+					"sourceNode", decision.SourceNode,
+					"targetNode", decision.TargetNode)
+			}
 		}
 	}
 
@@ -512,6 +547,12 @@ func (r *Rescheduler) isExcludedNamespace(namespace string) bool {
 	return r.controller.ExecuteMigration(ctx, decision)
 }
 */
+// PreBind 实现PreBindPlugin接口，这样插件能被调度器加载
+// 我们不在这里做任何调度相关的操作，只是为了让插件能被初始化
+func (r *Rescheduler) PreBind(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeName string) *framework.Status {
+	return nil // 不做任何操作，直接返回成功
+}
+
 // Stop 停止重调度器
 func (r *Rescheduler) Stop() {
 	if r.controller != nil {

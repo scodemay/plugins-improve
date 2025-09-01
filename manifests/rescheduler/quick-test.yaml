@@ -1,0 +1,93 @@
+# 快速测试配置 - 用于验证重调度器基本功能
+# 部署命令: kubectl apply -f manifests/rescheduler/quick-test.yaml
+
+---
+# 负载不均衡测试 - 强制所有Pod到worker节点创建负载压力
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: load-imbalance-test
+  namespace: default
+  labels:
+    app: load-imbalance-test
+    test-scenario: quick-demo
+spec:
+  replicas: 15
+  selector:
+    matchLabels:
+      app: load-imbalance-test
+  template:
+    metadata:
+      labels:
+        app: load-imbalance-test
+        test-scenario: quick-demo
+    spec:
+      schedulerName: rescheduler-scheduler
+      # 注释掉nodeSelector让Pod可以被重调度到任意节点
+      # nodeSelector:
+      #   node-role.kubernetes.io/worker: ""
+      containers:
+      - name: nginx
+        image: nginx:latest
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        ports:
+        - containerPort: 80
+      restartPolicy: Always
+
+---
+# 高资源使用Pod - 测试资源优化策略
+apiVersion: v1
+kind: Pod
+metadata:
+  name: resource-heavy-pod
+  namespace: default
+  labels:
+    app: resource-test
+    test-scenario: quick-demo
+spec:
+  schedulerName: rescheduler-scheduler
+  containers:
+  - name: stress-test
+    image: progrium/stress
+    args: ["--cpu", "1", "--vm", "1", "--vm-bytes", "128M"]
+    resources:
+      requests:
+        cpu: 500m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 512Mi
+  restartPolicy: Always
+
+---
+# 观察和清理脚本说明
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test-commands
+  namespace: default
+data:
+  观察命令: |
+    # 1. 查看Pod分布
+    kubectl get pods --all-namespaces -o wide | awk '{print $8}' | sort | uniq -c
+    
+    # 2. 监控重调度日志
+    kubectl logs -n kube-system -l app=rescheduler-scheduler -f
+    
+    # 3. 查看节点资源使用
+    kubectl top nodes
+    
+    # 4. 查看Pod资源使用
+    kubectl top pods
+  
+  清理命令: |
+    # 清理测试资源
+    kubectl delete deployment load-imbalance-test
+    kubectl delete pod resource-heavy-pod
+    kubectl delete configmap test-commands
