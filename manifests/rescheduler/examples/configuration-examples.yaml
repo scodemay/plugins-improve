@@ -1,0 +1,463 @@
+# 🔧 重调度器配置示例集合
+# 包含各种使用场景的配置示例
+
+---
+# ============================================================================
+# 📋 示例1：生产环境保守配置
+# 适用于：生产环境、稳定性优先的场景
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rescheduler-config-production
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+    env: production
+    config-type: conservative
+data:
+  config.yaml: |
+    apiVersion: kubescheduler.config.k8s.io/v1
+    kind: KubeSchedulerConfiguration
+    
+    leaderElection:
+      leaderElect: true
+      leaseDuration: 30s        # 增加租约时间提高稳定性
+      renewDeadline: 20s
+      retryPeriod: 5s
+    
+    profiles:
+      - schedulerName: rescheduler-scheduler
+        plugins:
+          filter:
+            enabled: [name: Rescheduler]
+          score:
+            enabled: [name: Rescheduler]
+          # 生产环境可以关闭PreBind以减少复杂性
+          # preBind:
+          #   enabled: [name: Rescheduler]
+        
+        pluginConfig:
+        - name: Rescheduler
+          args:
+            # 保守的重调度配置
+            reschedulingInterval: "120s"            # 2分钟检查间隔
+            enabledStrategies: ["LoadBalancing"]    # 仅启用负载均衡
+            cpuThreshold: 95.0                      # 高阈值减少误触发
+            memoryThreshold: 95.0
+            imbalanceThreshold: 40.0                # 高不平衡阈值
+            maxReschedulePods: 3                    # 限制重调度数量
+            
+            # 排除关键命名空间
+            excludedNamespaces:
+              - "kube-system"
+              - "kube-public"
+              - "kube-node-lease" 
+              - "istio-system"
+              - "monitoring"
+              - "logging"
+              - "database"        # 排除数据库命名空间
+            
+            # 调度优化：启用但保守
+            enableSchedulingOptimization: true
+            enablePreventiveRescheduling: false     # 关闭预防性重调度
+            cpuScoreWeight: 0.8                     # 更重视CPU
+            memoryScoreWeight: 0.2
+            loadBalanceBonus: 3.0                   # 小的奖励分数
+
+---
+# ============================================================================
+# 📋 示例2：开发测试环境激进配置  
+# 适用于：开发环境、测试环境、功能验证
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rescheduler-config-development
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+    env: development
+    config-type: aggressive
+data:
+  config.yaml: |
+    apiVersion: kubescheduler.config.k8s.io/v1
+    kind: KubeSchedulerConfiguration
+    
+    leaderElection:
+      leaderElect: false          # 开发环境可以关闭
+    
+    profiles:
+      - schedulerName: rescheduler-scheduler
+        plugins:
+          filter:
+            enabled: [name: Rescheduler]
+          score:
+            enabled: [name: Rescheduler]
+          preBind:
+            enabled: [name: Rescheduler]    # 启用所有功能
+        
+        pluginConfig:
+        - name: Rescheduler
+          args:
+            # 激进的重调度配置
+            reschedulingInterval: "15s"             # 高频检查
+            enabledStrategies:
+              - "LoadBalancing"
+              - "ResourceOptimization"
+              - "NodeMaintenance"
+            cpuThreshold: 50.0                      # 低阈值
+            memoryThreshold: 50.0
+            imbalanceThreshold: 10.0                # 低不平衡阈值
+            maxReschedulePods: 50                   # 高重调度限制
+            
+            excludedNamespaces:
+              - "kube-system"
+            
+            # 全功能调度优化
+            enableSchedulingOptimization: true
+            enablePreventiveRescheduling: true      # 启用预防性重调度
+            cpuScoreWeight: 0.5
+            memoryScoreWeight: 0.5
+            loadBalanceBonus: 20.0                  # 高奖励分数
+
+---
+# ============================================================================
+# 📋 示例3：高性能计算(HPC)环境配置
+# 适用于：CPU密集型工作负载、科学计算、AI/ML训练
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rescheduler-config-hpc
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+    env: hpc
+    config-type: cpu-optimized
+data:
+  config.yaml: |
+    apiVersion: kubescheduler.config.k8s.io/v1
+    kind: KubeSchedulerConfiguration
+    
+    profiles:
+      - schedulerName: rescheduler-scheduler
+        plugins:
+          filter:
+            enabled: [name: Rescheduler]
+          score:
+            enabled: [name: Rescheduler]
+          preBind:
+            enabled: [name: Rescheduler]
+        
+        pluginConfig:
+        - name: Rescheduler
+          args:
+            reschedulingInterval: "60s"
+            enabledStrategies:
+              - "LoadBalancing"
+              - "ResourceOptimization"
+            cpuThreshold: 85.0                      # CPU重要，阈值稍低
+            memoryThreshold: 90.0                   # 内存次要，阈值较高
+            imbalanceThreshold: 15.0
+            maxReschedulePods: 8
+            
+            excludedNamespaces:
+              - "kube-system"
+              - "gpu-operator"        # 排除GPU操作系统
+            
+            # CPU优化配置
+            enableSchedulingOptimization: true
+            enablePreventiveRescheduling: true
+            cpuScoreWeight: 0.8                     # 重视CPU
+            memoryScoreWeight: 0.2                  # 轻视内存
+            loadBalanceBonus: 15.0
+
+---
+# ============================================================================
+# 📋 示例4：内存密集型应用配置
+# 适用于：数据库、缓存系统、大数据处理
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rescheduler-config-memory-intensive
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+    env: memory-intensive
+    config-type: memory-optimized
+data:
+  config.yaml: |
+    apiVersion: kubescheduler.config.k8s.io/v1
+    kind: KubeSchedulerConfiguration
+    
+    profiles:
+      - schedulerName: rescheduler-scheduler
+        plugins:
+          filter:
+            enabled: [name: Rescheduler]
+          score:
+            enabled: [name: Rescheduler]
+          preBind:
+            enabled: [name: Rescheduler]
+        
+        pluginConfig:
+        - name: Rescheduler
+          args:
+            reschedulingInterval: "45s"
+            enabledStrategies:
+              - "LoadBalancing"
+              - "ResourceOptimization"
+            cpuThreshold: 90.0                      # CPU次要
+            memoryThreshold: 75.0                   # 内存重要，阈值较低
+            imbalanceThreshold: 20.0
+            maxReschedulePods: 6
+            
+            excludedNamespaces:
+              - "kube-system"
+              - "database"
+              - "redis"
+              - "elasticsearch"
+            
+            # 内存优化配置
+            enableSchedulingOptimization: true
+            enablePreventiveRescheduling: true
+            cpuScoreWeight: 0.3                     # 轻视CPU
+            memoryScoreWeight: 0.7                  # 重视内存
+            loadBalanceBonus: 12.0
+
+---
+# ============================================================================
+# 📋 示例5：微服务架构配置
+# 适用于：微服务、云原生应用、容器化应用
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rescheduler-config-microservices
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+    env: microservices
+    config-type: balanced
+data:
+  config.yaml: |
+    apiVersion: kubescheduler.config.k8s.io/v1
+    kind: KubeSchedulerConfiguration
+    
+    profiles:
+      - schedulerName: rescheduler-scheduler
+        plugins:
+          filter:
+            enabled: [name: Rescheduler]
+          score:
+            enabled: [name: Rescheduler]
+          preBind:
+            enabled: [name: Rescheduler]
+        
+        pluginConfig:
+        - name: Rescheduler
+          args:
+            reschedulingInterval: "30s"             # 标准间隔
+            enabledStrategies:
+              - "LoadBalancing"
+              - "ResourceOptimization"
+              - "NodeMaintenance"
+            cpuThreshold: 80.0                      # 平衡的阈值
+            memoryThreshold: 80.0
+            imbalanceThreshold: 25.0
+            maxReschedulePods: 15                   # 微服务数量多，允许更多重调度
+            
+            excludedNamespaces:
+              - "kube-system"
+              - "istio-system"
+              - "linkerd"
+              - "monitoring"
+            
+            # 平衡的调度优化
+            enableSchedulingOptimization: true
+            enablePreventiveRescheduling: true
+            cpuScoreWeight: 0.6                     # 平衡权重
+            memoryScoreWeight: 0.4
+            loadBalanceBonus: 10.0
+
+---
+# ============================================================================
+# 📋 示例6：仅调度优化配置（关闭重调度）
+# 适用于：只想要智能调度，不要重调度的场景
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rescheduler-config-scheduling-only
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+    env: scheduling-only
+    config-type: no-rescheduling
+data:
+  config.yaml: |
+    apiVersion: kubescheduler.config.k8s.io/v1
+    kind: KubeSchedulerConfiguration
+    
+    profiles:
+      - schedulerName: rescheduler-scheduler
+        plugins:
+          filter:
+            enabled: [name: Rescheduler]
+          score:
+            enabled: [name: Rescheduler]
+          # 不启用PreBind，关闭重调度功能
+        
+        pluginConfig:
+        - name: Rescheduler
+          args:
+            # 关闭重调度功能
+            reschedulingInterval: "0s"              # 设置为0关闭重调度
+            enabledStrategies: []                   # 空策略列表
+            
+            # 仅调度优化配置
+            enableSchedulingOptimization: true
+            enablePreventiveRescheduling: false     # 关闭预防性重调度
+            cpuScoreWeight: 0.6
+            memoryScoreWeight: 0.4
+            loadBalanceBonus: 15.0
+
+---
+# ============================================================================
+# 📋 示例7：多租户环境配置
+# 适用于：多租户集群、SaaS平台、共享集群
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rescheduler-config-multitenant
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+    env: multitenant
+    config-type: tenant-aware
+data:
+  config.yaml: |
+    apiVersion: kubescheduler.config.k8s.io/v1
+    kind: KubeSchedulerConfiguration
+    
+    profiles:
+      - schedulerName: rescheduler-scheduler
+        plugins:
+          filter:
+            enabled: [name: Rescheduler]
+          score:
+            enabled: [name: Rescheduler]
+          preBind:
+            enabled: [name: Rescheduler]
+        
+        pluginConfig:
+        - name: Rescheduler
+          args:
+            reschedulingInterval: "90s"             # 较长间隔减少影响
+            enabledStrategies:
+              - "LoadBalancing"
+            cpuThreshold: 85.0
+            memoryThreshold: 85.0
+            imbalanceThreshold: 30.0
+            maxReschedulePods: 5                    # 限制影响范围
+            
+            # 排除租户系统命名空间
+            excludedNamespaces:
+              - "kube-system"
+              - "tenant-system"
+              - "platform-services"
+              - "monitoring"
+              - "logging"
+              - "ingress-nginx"
+            
+            # 排除特定标签的Pod（租户关键服务）
+            excludedPodSelector: "tier=critical,tenant.io/protected=true"
+            
+            enableSchedulingOptimization: true
+            enablePreventiveRescheduling: false     # 多租户环境保守
+            cpuScoreWeight: 0.6
+            memoryScoreWeight: 0.4
+            loadBalanceBonus: 8.0
+
+---
+# ============================================================================
+# 📋 使用说明 ConfigMap
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: configuration-examples-guide
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+    component: documentation
+data:
+  README.md: |
+    # 重调度器配置示例使用指南
+    
+    ## 📋 配置选择指南
+    
+    | 环境类型 | 推荐配置 | 说明 |
+    |---------|---------|------|
+    | 生产环境 | rescheduler-config-production | 保守配置，稳定性优先 |
+    | 开发测试 | rescheduler-config-development | 激进配置，功能完整 |
+    | HPC计算 | rescheduler-config-hpc | CPU优化配置 |
+    | 数据库/缓存 | rescheduler-config-memory-intensive | 内存优化配置 |
+    | 微服务 | rescheduler-config-microservices | 平衡配置 |
+    | 仅调度 | rescheduler-config-scheduling-only | 关闭重调度功能 |
+    | 多租户 | rescheduler-config-multitenant | 租户感知配置 |
+    
+    ## 🔧 应用配置
+    
+    ### 方法1：直接替换配置
+    ```bash
+    # 选择适合的配置并重命名
+    kubectl get configmap rescheduler-config-production -o yaml | \
+      sed 's/rescheduler-config-production/rescheduler-config/' | \
+      kubectl apply -f -
+    
+    # 重启调度器应用新配置
+    kubectl rollout restart deployment -n kube-system rescheduler-scheduler
+    ```
+    
+    ### 方法2：使用kustomize
+    ```bash
+    # 在 kustomization.yaml 中指定配置
+    patchesStrategicMerge:
+      - config-production.yaml
+    ```
+    
+    ## ⚙️ 配置参数说明
+    
+    ### 重调度间隔建议
+    - **生产环境**: 60-120秒（稳定性优先）
+    - **开发环境**: 15-30秒（快速反馈）
+    - **高负载环境**: 90-180秒（减少干扰）
+    
+    ### 阈值设置建议
+    - **保守**: CPU/内存 90-95%
+    - **平衡**: CPU/内存 80-85%
+    - **激进**: CPU/内存 60-70%
+    
+    ### 重调度数量限制
+    - **生产环境**: 3-5个（减少影响）
+    - **开发环境**: 10-50个（快速优化）
+    - **微服务**: 10-20个（适应Pod数量）
+    
+    ## 🎯 最佳实践
+    
+    1. **从保守配置开始**：先使用生产环境配置验证稳定性
+    2. **逐步调优**：根据实际情况调整阈值和间隔
+    3. **监控影响**：观察重调度对应用的影响
+    4. **环境隔离**：不同环境使用不同配置
+    5. **排除关键服务**：将关键服务排除在重调度之外
+    
+    ## 🚨 注意事项
+    
+    - 修改配置后需要重启调度器Pod
+    - 重调度可能影响有状态应用
+    - 建议在维护窗口期间调整配置
+    - 监控重调度频率避免过度优化

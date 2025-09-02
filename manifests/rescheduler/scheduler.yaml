@@ -1,0 +1,277 @@
+# 重调度器调度器部署配置
+# 包含Deployment和相关服务配置
+
+---
+# 优先级类 - 确保调度器高优先级运行
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: rescheduler-priority
+  labels:
+    app: rescheduler-scheduler
+    component: priority
+value: 1000000
+globalDefault: false
+description: "高优先级类，用于重调度器调度器"
+
+---
+# Deployment - 重调度器调度器
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rescheduler-scheduler
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+    component: scheduler
+    version: "latest"
+spec:
+  # 副本配置
+  replicas: 1  # 生产环境可以设置为2以提高可用性
+  
+  # 部署策略
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0      # 确保服务不中断
+      maxSurge: 1
+  
+  # 选择器
+  selector:
+    matchLabels:
+      app: rescheduler-scheduler
+      component: scheduler
+  
+  # Pod 模板
+  template:
+    metadata:
+      labels:
+        app: rescheduler-scheduler
+        component: scheduler
+        version: "latest"
+      annotations:
+        # Prometheus 监控注解
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "10259"
+        prometheus.io/path: "/metrics"
+        # 配置版本注解，用于触发Pod重启
+        config.hash/rescheduler: "{{ config_hash }}"
+    
+    spec:
+      # 服务账户
+      serviceAccountName: rescheduler-scheduler
+      
+      # 安全上下文
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534  # nobody user
+        fsGroup: 65534
+      
+      # 容器配置
+      containers:
+      - name: kube-scheduler
+        image: scheduler-plugins:latest
+        imagePullPolicy: Never  # 开发环境使用本地镜像
+        
+        # 启动命令
+        command:
+        - /bin/kube-scheduler
+        args:
+        - --config=/etc/kubernetes/config.yaml
+        - --v=2                    # 日志级别
+        - --leader-elect=true      # 启用领导者选举
+        - --profiling=false        # 关闭性能分析（安全）
+        
+        # 资源限制
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        
+        # 存储卷挂载
+        volumeMounts:
+        - name: config
+          mountPath: /etc/kubernetes
+          readOnly: true
+        
+        # 健康检查
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 10259
+            scheme: HTTPS
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 10259
+            scheme: HTTPS
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        
+        # 环境变量
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        
+        # 容器安全上下文
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+      
+      # 存储卷
+      volumes:
+      - name: config
+        configMap:
+          name: rescheduler-config
+          defaultMode: 0444
+      
+      # 调度配置
+      priorityClassName: rescheduler-priority
+      
+      # 节点选择器 - 调度到控制平面节点
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      
+      # 容忍配置 - 允许调度到控制平面
+      tolerations:
+      - key: "node-role.kubernetes.io/master"
+        operator: "Equal"
+        effect: "NoSchedule"
+      - key: "node-role.kubernetes.io/control-plane"
+        operator: "Equal"
+        effect: "NoSchedule"
+      - key: "node.kubernetes.io/not-ready"
+        operator: "Exists"
+        effect: "NoExecute"
+        tolerationSeconds: 30
+      - key: "node.kubernetes.io/unreachable"
+        operator: "Exists"
+        effect: "NoExecute"
+        tolerationSeconds: 30
+      
+      # DNS 配置
+      dnsPolicy: ClusterFirst
+      
+      # 重启策略
+      restartPolicy: Always
+      
+      # 优雅关闭时间
+      terminationGracePeriodSeconds: 30
+
+---
+# Service - 监控和健康检查
+apiVersion: v1
+kind: Service
+metadata:
+  name: rescheduler-scheduler-metrics
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+    component: metrics
+spec:
+  type: ClusterIP
+  selector:
+    app: rescheduler-scheduler
+    component: scheduler
+  ports:
+  - name: https-metrics
+    port: 10259
+    targetPort: 10259
+    protocol: TCP
+  - name: https-health
+    port: 10251
+    targetPort: 10251
+    protocol: TCP
+
+---
+# ServiceMonitor - Prometheus 监控（可选）
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: rescheduler-scheduler
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+    component: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: rescheduler-scheduler
+      component: metrics
+  endpoints:
+  - port: https-metrics
+    scheme: https
+    tlsConfig:
+      insecureSkipVerify: true
+    interval: 30s
+    path: /metrics
+
+---
+# PodDisruptionBudget - 确保调度器高可用
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: rescheduler-scheduler
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+    component: availability
+spec:
+  maxUnavailable: 0  # 不允许主动中断
+  selector:
+    matchLabels:
+      app: rescheduler-scheduler
+      component: scheduler
+
+---
+# NetworkPolicy - 网络安全策略（可选）
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rescheduler-scheduler
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+    component: security
+spec:
+  podSelector:
+    matchLabels:
+      app: rescheduler-scheduler
+      component: scheduler
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring  # 允许监控命名空间访问
+    ports:
+    - protocol: TCP
+      port: 10259
+  egress:
+  - to: []  # 允许所有出站流量（调度器需要访问API服务器）
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 6443

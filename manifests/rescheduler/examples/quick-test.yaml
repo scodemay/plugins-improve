@@ -1,0 +1,335 @@
+# 🧪 重调度器快速测试配置
+# 用于验证重调度器基本功能的测试工作负载
+# 部署命令: kubectl apply -f manifests/rescheduler/examples/quick-test.yaml
+
+---
+# 测试命名空间
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rescheduler-test
+  labels:
+    app: rescheduler-test
+    purpose: testing
+
+---
+# 🎯 测试1：负载均衡验证
+# 创建多个Pod测试负载均衡重调度
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: load-balance-test
+  namespace: rescheduler-test
+  labels:
+    app: load-balance-test
+    test-type: load-balancing
+spec:
+  replicas: 12  # 足够的副本数量触发负载均衡
+  selector:
+    matchLabels:
+      app: load-balance-test
+  template:
+    metadata:
+      labels:
+        app: load-balance-test
+        test-type: load-balancing
+    spec:
+      schedulerName: rescheduler-scheduler  # 使用重调度器
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        resources:
+          requests:
+            cpu: 50m      # 轻量级资源请求
+            memory: 64Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi
+        ports:
+        - containerPort: 80
+        # 添加就绪探针确保Pod状态
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      restartPolicy: Always
+
+---
+# 🔥 测试2：资源压力测试
+# 创建高资源使用的Pod测试资源优化重调度
+apiVersion: v1
+kind: Pod
+metadata:
+  name: resource-stress-test
+  namespace: rescheduler-test
+  labels:
+    app: resource-stress
+    test-type: resource-optimization
+spec:
+  schedulerName: rescheduler-scheduler
+  containers:
+  - name: stress-cpu
+    image: progrium/stress
+    args: 
+    - --cpu
+    - "1"           # 1个CPU核心压力
+    - --vm
+    - "1"           # 1个内存压力进程
+    - --vm-bytes
+    - "256M"        # 256MB内存压力
+    - --timeout
+    - "300s"        # 5分钟后自动停止
+    resources:
+      requests:
+        cpu: 800m     # 高CPU请求
+        memory: 400Mi # 高内存请求
+      limits:
+        cpu: 1000m
+        memory: 512Mi
+  restartPolicy: Never
+
+---
+# 🔄 测试3：滚动部署测试
+# 测试滚动更新期间的重调度行为
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rolling-update-test
+  namespace: rescheduler-test
+  labels:
+    app: rolling-update-test
+    test-type: rolling-update
+spec:
+  replicas: 6
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: rolling-update-test
+  template:
+    metadata:
+      labels:
+        app: rolling-update-test
+        test-type: rolling-update
+        version: "v1"  # 版本标签用于测试更新
+    spec:
+      schedulerName: rescheduler-scheduler
+      containers:
+      - name: app
+        image: nginx:1.20-alpine
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        env:
+        - name: VERSION
+          value: "v1"
+        ports:
+        - containerPort: 80
+
+---
+# 🚫 测试4：排除重调度的Pod
+# 测试排除标签功能
+apiVersion: v1
+kind: Pod
+metadata:
+  name: excluded-pod
+  namespace: rescheduler-test
+  labels:
+    app: excluded-test
+    test-type: exclusion
+    # 排除重调度的标签
+    scheduler.alpha.kubernetes.io/rescheduling: "disabled"
+spec:
+  schedulerName: rescheduler-scheduler
+  containers:
+  - name: app
+    image: busybox:latest
+    command: ["sleep", "3600"]  # 睡眠1小时
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+  restartPolicy: Always
+
+---
+# 📊 测试5：有状态应用测试
+# 测试StatefulSet的重调度行为
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: stateful-test
+  namespace: rescheduler-test
+  labels:
+    app: stateful-test
+    test-type: statefulset
+spec:
+  serviceName: stateful-test-svc
+  replicas: 3
+  selector:
+    matchLabels:
+      app: stateful-test
+  template:
+    metadata:
+      labels:
+        app: stateful-test
+        test-type: statefulset
+    spec:
+      schedulerName: rescheduler-scheduler
+      containers:
+      - name: app
+        image: redis:alpine
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        ports:
+        - containerPort: 6379
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 1Gi
+
+---
+# StatefulSet 对应的 Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: stateful-test-svc
+  namespace: rescheduler-test
+  labels:
+    app: stateful-test
+spec:
+  clusterIP: None  # Headless service
+  selector:
+    app: stateful-test
+  ports:
+  - port: 6379
+    targetPort: 6379
+
+---
+# 📝 测试说明和命令 ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test-guide
+  namespace: rescheduler-test
+  labels:
+    app: test-guide
+data:
+  README.md: |
+    # 重调度器测试指南
+    
+    ## 🚀 测试部署
+    ```bash
+    # 部署测试工作负载
+    kubectl apply -f manifests/rescheduler/examples/quick-test.yaml
+    
+    # 验证Pod分布
+    kubectl get pods -n rescheduler-test -o wide
+    ```
+    
+    ## 📊 监控命令
+    ```bash
+    # 1. 观察Pod分布情况
+    kubectl get pods -n rescheduler-test -o wide | awk '{print $7}' | sort | uniq -c
+    
+    # 2. 监控重调度器日志
+    kubectl logs -n kube-system -l app=rescheduler-scheduler -f
+    
+    # 3. 查看节点资源使用
+    kubectl top nodes
+    
+    # 4. 查看Pod资源使用
+    kubectl top pods -n rescheduler-test
+    
+    # 5. 查看重调度事件
+    kubectl get events -n rescheduler-test --sort-by='.lastTimestamp'
+    ```
+    
+    ## 🧪 测试场景
+    
+    ### 负载均衡测试
+    - 观察 load-balance-test Pod 在节点间的分布
+    - 等待30秒观察重调度行为
+    
+    ### 资源压力测试
+    - resource-stress-test Pod 会产生CPU和内存压力
+    - 观察是否触发资源优化重调度
+    
+    ### 排除功能测试
+    - excluded-pod 应该不会被重调度
+    - 验证排除标签功能正常
+    
+    ## 🔄 测试节点维护
+    ```bash
+    # 标记节点为维护模式
+    kubectl label node <worker-node> scheduler.alpha.kubernetes.io/maintenance=true
+    
+    # 观察Pod迁移
+    kubectl get pods -n rescheduler-test -o wide --watch
+    
+    # 取消维护模式
+    kubectl label node <worker-node> scheduler.alpha.kubernetes.io/maintenance-
+    ```
+    
+    ## 🧹 清理测试
+    ```bash
+    # 删除测试命名空间（包含所有测试资源）
+    kubectl delete namespace rescheduler-test
+    
+    # 或者单独删除资源
+    kubectl delete -f manifests/rescheduler/examples/quick-test.yaml
+    ```
+    
+    ## 📈 预期行为
+    
+    1. **负载均衡**: Pod应该在30秒内重新分布以平衡节点负载
+    2. **资源优化**: 高资源使用的Pod应该触发周围Pod的重调度
+    3. **排除功能**: 带有排除标签的Pod不应该被重调度
+    4. **节点维护**: 维护模式的节点上的Pod应该被迁移
+    5. **调度优化**: 新Pod应该优先调度到低负载节点
+
+  monitoring.sh: |
+    #!/bin/bash
+    # 监控脚本
+    
+    echo "🔍 开始监控重调度器测试..."
+    echo "======================="
+    
+    while true; do
+      echo "📊 $(date): Pod分布情况"
+      kubectl get pods -n rescheduler-test -o wide | awk 'NR>1 {print $7}' | sort | uniq -c
+      
+      echo "📈 节点资源使用:"
+      kubectl top nodes 2>/dev/null || echo "metrics-server未安装"
+      
+      echo "----------------------"
+      sleep 30
+    done
+
+  cleanup.sh: |
+    #!/bin/bash
+    # 清理脚本
+    
+    echo "🧹 清理测试资源..."
+    kubectl delete namespace rescheduler-test
+    echo "✅ 测试资源已清理完成"

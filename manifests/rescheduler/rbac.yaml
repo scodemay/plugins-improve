@@ -1,0 +1,107 @@
+# 重调度器 RBAC 配置
+# 提供调度器和重调度器运行所需的权限
+
+---
+# ServiceAccount
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rescheduler-scheduler
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+    component: rbac
+
+---
+# ClusterRole - 调度器核心权限
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rescheduler-scheduler
+  labels:
+    app: rescheduler-scheduler
+    component: rbac
+rules:
+# Pod 管理权限
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["pods/binding"]
+  verbs: ["create"]
+- apiGroups: [""]
+  resources: ["pods/status"] 
+  verbs: ["patch", "update"]
+
+# Pod 驱逐权限（重调度功能必需）
+- apiGroups: [""]
+  resources: ["pods/eviction"]
+  verbs: ["create"]
+
+# 节点和基础资源权限
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["namespaces", "services", "replicationcontrollers", "persistentvolumes", "persistentvolumeclaims"]
+  verbs: ["get", "list", "watch"]
+
+# 事件记录权限
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch", "update"]
+- apiGroups: ["events.k8s.io"]
+  resources: ["events"]
+  verbs: ["create", "patch", "update"]
+
+# 领导者选举权限
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["endpoints"]
+  verbs: ["create", "get", "update"]
+
+# 工作负载控制器权限（重调度协调）
+- apiGroups: ["apps"]
+  resources: ["replicasets", "deployments", "statefulsets"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+
+# PodDisruptionBudget 权限（安全重调度）
+- apiGroups: ["policy"]
+  resources: ["poddisruptionbudgets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+# 配置和认证权限
+- apiGroups: [""]
+  resources: ["configmaps"]
+  resourceNames: ["extension-apiserver-authentication"]
+  verbs: ["get", "list", "watch"]
+
+# 存储相关权限
+- apiGroups: ["storage.k8s.io"]
+  resources: ["storageclasses", "volumeattachments", "csistoragecapacities", "csidrivers", "csinodes"]
+  verbs: ["get", "list", "watch"]
+
+# 资源监控权限（metrics-server）
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["nodes", "pods"]
+  verbs: ["get", "list"]
+
+---
+# ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rescheduler-scheduler
+  labels:
+    app: rescheduler-scheduler
+    component: rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rescheduler-scheduler
+subjects:
+- kind: ServiceAccount
+  name: rescheduler-scheduler
+  namespace: kube-system

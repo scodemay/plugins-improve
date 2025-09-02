@@ -61,7 +61,7 @@ func (dc *DeploymentCoordinator) CoordinatedRescheduling(ctx context.Context, de
 
 // deploymentBasedRescheduling 基于Deployment的重调度策略
 func (dc *DeploymentCoordinator) deploymentBasedRescheduling(ctx context.Context, decision ReschedulingDecision,
-	deployment *appsv1.Deployment, replicaSet *appsv1.ReplicaSet) error {
+	deployment *appsv1.Deployment, _ *appsv1.ReplicaSet) error {
 
 	dc.logger.Info("开始Deployment协调重调度",
 		"deployment", fmt.Sprintf("%s/%s", deployment.Namespace, deployment.Name),
@@ -166,7 +166,7 @@ func (dc *DeploymentCoordinator) addNodePreference(ctx context.Context, deployme
 
 // createTemporaryPDB 创建临时的PodDisruptionBudget
 func (dc *DeploymentCoordinator) createTemporaryPDB(ctx context.Context, namespace, name string,
-	selector *metav1.LabelSelector) error { 
+	selector *metav1.LabelSelector) error {
 
 	minAvailable := intstr.FromInt(1)
 	pdb := &policyv1.PodDisruptionBudget{
@@ -232,7 +232,7 @@ func (dc *DeploymentCoordinator) waitAndCleanup(ctx context.Context, deployment 
 }
 
 // removeNodePreference 移除节点偏好设置
-func (dc *DeploymentCoordinator) removeNodePreference(ctx context.Context, deployment *appsv1.Deployment, preferredNode string) error {
+func (dc *DeploymentCoordinator) removeNodePreference(ctx context.Context, deployment *appsv1.Deployment, _ string) error {
 	currentDeployment, err := dc.clientset.AppsV1().Deployments(deployment.Namespace).Get(ctx, deployment.Name, metav1.GetOptions{})
 	if err != nil {
 		return err
@@ -297,7 +297,7 @@ func (dc *DeploymentCoordinator) standalonePodRescheduling(ctx context.Context, 
 }
 
 // findOwnerDeployment 查找Pod所属的Deployment
-func (dc *DeploymentCoordinator) findOwnerDeployment(ctx context.Context, pod *v1.Pod) (*appsv1.Deployment, *appsv1.ReplicaSet, error) {
+func (dc *DeploymentCoordinator) findOwnerDeployment(_ context.Context, pod *v1.Pod) (*appsv1.Deployment, *appsv1.ReplicaSet, error) {
 	// 检查Pod是否由ReplicaSet管理
 	for _, ownerRef := range pod.GetOwnerReferences() {
 		if ownerRef.Kind == "ReplicaSet" && ownerRef.APIVersion == "apps/v1" {

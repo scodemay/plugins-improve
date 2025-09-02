@@ -1,0 +1,216 @@
+# 重调度器配置文件
+# 包含调度器配置和重调度器插件参数
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rescheduler-config
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+    component: config
+data:
+  config.yaml: |
+    apiVersion: kubescheduler.config.k8s.io/v1
+    kind: KubeSchedulerConfiguration
+    
+    # 领导者选举配置
+    leaderElection:
+      leaderElect: true
+      leaseDuration: 15s
+      renewDeadline: 10s
+      retryPeriod: 2s
+      resourceLock: leases
+      resourceNamespace: kube-system
+      resourceName: rescheduler-scheduler
+    
+    # 客户端连接配置
+    clientConnection:
+      kubeconfig: ""  # 使用集群内配置
+      qps: 100        # 增加 QPS 限制
+      burst: 200      # 增加突发限制
+    
+    # 调度器配置档案
+    profiles:
+      - schedulerName: rescheduler-scheduler
+        
+        # 启用重调度器插件的三个扩展点
+        plugins:
+          # 过滤扩展点：阻止调度到过载节点
+          filter:
+            enabled:
+            - name: Rescheduler
+          
+          # 打分扩展点：优选低负载节点
+          score:
+            enabled:
+            - name: Rescheduler
+          
+          # PreBind扩展点：预防性重调度
+          preBind:
+            enabled:
+            - name: Rescheduler
+        
+        # 重调度器插件配置
+        pluginConfig:
+        - name: Rescheduler
+          args:
+            # ==================== 基础重调度配置 ====================
+            
+            # 重调度检查间隔
+            reschedulingInterval: "30s"
+            
+            # 启用的重调度策略
+            enabledStrategies:
+              - "LoadBalancing"       # 负载均衡策略
+              - "ResourceOptimization" # 资源优化策略
+              - "NodeMaintenance"     # 节点维护策略
+            
+            # 资源使用率阈值（百分比）
+            cpuThreshold: 80.0        # CPU使用率超过80%触发重调度
+            memoryThreshold: 80.0     # 内存使用率超过80%触发重调度
+            imbalanceThreshold: 20.0  # 节点间负载差异超过20%触发均衡
+            
+            # 重调度控制参数
+            maxReschedulePods: 10     # 单次重调度最大Pod数量
+            
+            # 排除配置
+            excludedNamespaces:
+              - "kube-system"         # 系统命名空间
+              - "kube-public"         # 公共命名空间
+              - "kube-node-lease"     # 节点租约命名空间
+            
+            # Pod标签选择器（排除特定Pod）
+            excludedPodSelector: ""
+            
+            # ==================== 调度优化配置 ====================
+            
+            # 新功能开关
+            enableSchedulingOptimization: true  # 启用Filter和Score功能
+            enablePreventiveRescheduling: true  # 启用预防性重调度
+            
+            # Score计算权重配置
+            cpuScoreWeight: 0.6       # CPU权重（0.0-1.0）
+            memoryScoreWeight: 0.4    # 内存权重（0.0-1.0）
+            
+            # 负载均衡奖励配置
+            loadBalanceBonus: 10.0    # 低负载节点额外加分（0-50）
+
+---
+# 生产环境配置示例（保守模式）
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rescheduler-config-production
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+    component: config
+    env: production
+data:
+  config.yaml: |
+    apiVersion: kubescheduler.config.k8s.io/v1
+    kind: KubeSchedulerConfiguration
+    
+    leaderElection:
+      leaderElect: true
+      leaseDuration: 30s      # 增加租约时间
+      renewDeadline: 20s
+      retryPeriod: 5s
+    
+    clientConnection:
+      kubeconfig: ""
+      qps: 50               # 降低QPS避免对API服务器压力
+      burst: 100
+    
+    profiles:
+      - schedulerName: rescheduler-scheduler
+        plugins:
+          filter:
+            enabled: [name: Rescheduler]
+          score:
+            enabled: [name: Rescheduler]
+          preBind:
+            enabled: [name: Rescheduler]
+        pluginConfig:
+        - name: Rescheduler
+          args:
+            # 保守的重调度配置
+            reschedulingInterval: "60s"              # 降低检查频率
+            enabledStrategies: ["LoadBalancing"]     # 仅启用负载均衡
+            cpuThreshold: 90.0                       # 提高阈值
+            memoryThreshold: 90.0
+            imbalanceThreshold: 30.0                 # 提高不均衡阈值
+            maxReschedulePods: 5                     # 限制重调度数量
+            
+            excludedNamespaces:
+              - "kube-system"
+              - "kube-public"
+              - "kube-node-lease"
+              - "istio-system"        # 排除服务网格
+              - "monitoring"          # 排除监控命名空间
+            
+            # 调度优化：启用但保守配置
+            enableSchedulingOptimization: true
+            enablePreventiveRescheduling: false     # 生产环境关闭预防性重调度
+            cpuScoreWeight: 0.7
+            memoryScoreWeight: 0.3
+            loadBalanceBonus: 5.0                   # 降低奖励分数
+
+---
+# 测试环境配置示例（激进模式）
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rescheduler-config-testing
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+    component: config
+    env: testing
+data:
+  config.yaml: |
+    apiVersion: kubescheduler.config.k8s.io/v1
+    kind: KubeSchedulerConfiguration
+    
+    leaderElection:
+      leaderElect: false      # 测试环境可以关闭领导者选举
+    
+    clientConnection:
+      kubeconfig: ""
+      qps: 200              # 测试环境可以使用更高QPS
+      burst: 400
+    
+    profiles:
+      - schedulerName: rescheduler-scheduler
+        plugins:
+          filter:
+            enabled: [name: Rescheduler]
+          score:
+            enabled: [name: Rescheduler]
+          preBind:
+            enabled: [name: Rescheduler]
+        pluginConfig:
+        - name: Rescheduler
+          args:
+            # 激进的重调度配置（用于测试）
+            reschedulingInterval: "15s"              # 高频检查
+            enabledStrategies: 
+              - "LoadBalancing"
+              - "ResourceOptimization"
+              - "NodeMaintenance"
+            cpuThreshold: 60.0                       # 低阈值
+            memoryThreshold: 60.0
+            imbalanceThreshold: 15.0                 # 低不均衡阈值
+            maxReschedulePods: 20                    # 允许更多重调度
+            
+            excludedNamespaces:
+              - "kube-system"
+            
+            # 全功能调度优化
+            enableSchedulingOptimization: true
+            enablePreventiveRescheduling: true       # 启用预防性重调度
+            cpuScoreWeight: 0.6
+            memoryScoreWeight: 0.4
+            loadBalanceBonus: 15.0                   # 高奖励分数
