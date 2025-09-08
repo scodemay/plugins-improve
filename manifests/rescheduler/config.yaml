@@ -1,5 +1,5 @@
-# 重调度器配置文件
-# 包含调度器配置和重调度器插件参数
+# 重调度器配置文件 - 更新版本
+# 匹配重构后的代码参数
 
 ---
 apiVersion: v1
@@ -35,7 +35,7 @@ data:
     profiles:
       - schedulerName: rescheduler-scheduler
         
-        # 启用重调度器插件的三个扩展点
+        # 启用重调度器插件的四个扩展点
         plugins:
           # 过滤扩展点：阻止调度到过载节点
           filter:
@@ -44,6 +44,11 @@ data:
           
           # 打分扩展点：优选低负载节点
           score:
+            enabled:
+            - name: Rescheduler
+          
+          # 资源预留扩展点：预留资源检查
+          reserve:
             enabled:
             - name: Rescheduler
           
@@ -56,24 +61,11 @@ data:
         pluginConfig:
         - name: Rescheduler
           args:
-            # ==================== 基础重调度配置 ====================
-            
-            # 重调度检查间隔
-            reschedulingInterval: "30s"
-            
-            # 启用的重调度策略
-            enabledStrategies:
-              - "LoadBalancing"       # 负载均衡策略
-              - "ResourceOptimization" # 资源优化策略
-              - "NodeMaintenance"     # 节点维护策略
+            # ==================== 基础调度配置 ====================
             
             # 资源使用率阈值（百分比）
-            cpuThreshold: 80.0        # CPU使用率超过80%触发重调度
-            memoryThreshold: 80.0     # 内存使用率超过80%触发重调度
-            imbalanceThreshold: 20.0  # 节点间负载差异超过20%触发均衡
-            
-            # 重调度控制参数
-            maxReschedulePods: 10     # 单次重调度最大Pod数量
+            cpuThreshold: 80.0        # CPU使用率超过80%时过滤节点
+            memoryThreshold: 80.0     # 内存使用率超过80%时过滤节点
             
             # 排除配置
             excludedNamespaces:
@@ -81,12 +73,9 @@ data:
               - "kube-public"         # 公共命名空间
               - "kube-node-lease"     # 节点租约命名空间
             
-            # Pod标签选择器（排除特定Pod）
-            excludedPodSelector: ""
-            
             # ==================== 调度优化配置 ====================
             
-            # 新功能开关
+            # 功能开关
             enableSchedulingOptimization: true  # 启用Filter和Score功能
             enablePreventiveRescheduling: true  # 启用预防性重调度
             
@@ -96,6 +85,14 @@ data:
             
             # 负载均衡奖励配置
             loadBalanceBonus: 10.0    # 低负载节点额外加分（0-50）
+            
+            # ==================== 重调度控制器配置 ====================
+            
+            # 控制器开关
+            enableReschedulingController: true   # 启用重调度控制器
+            
+            # 重调度检查间隔
+            reschedulingInterval: "30s"         # 控制器检查间隔
 
 ---
 # 生产环境配置示例（保守模式）
@@ -131,18 +128,18 @@ data:
             enabled: [name: Rescheduler]
           score:
             enabled: [name: Rescheduler]
-          preBind:
-            enabled: [name: Rescheduler]
+          # 生产环境关闭预留和预绑定检查以减少复杂性
+          # reserve:
+          #   enabled: [name: Rescheduler]
+          # preBind:
+          #   enabled: [name: Rescheduler]
         pluginConfig:
         - name: Rescheduler
           args:
             # 保守的重调度配置
             reschedulingInterval: "60s"              # 降低检查频率
-            enabledStrategies: ["LoadBalancing"]     # 仅启用负载均衡
             cpuThreshold: 90.0                       # 提高阈值
             memoryThreshold: 90.0
-            imbalanceThreshold: 30.0                 # 提高不均衡阈值
-            maxReschedulePods: 5                     # 限制重调度数量
             
             excludedNamespaces:
               - "kube-system"
@@ -189,6 +186,8 @@ data:
             enabled: [name: Rescheduler]
           score:
             enabled: [name: Rescheduler]
+          reserve:
+            enabled: [name: Rescheduler]
           preBind:
             enabled: [name: Rescheduler]
         pluginConfig:
@@ -196,14 +195,8 @@ data:
           args:
             # 激进的重调度配置（用于测试）
             reschedulingInterval: "15s"              # 高频检查
-            enabledStrategies: 
-              - "LoadBalancing"
-              - "ResourceOptimization"
-              - "NodeMaintenance"
             cpuThreshold: 60.0                       # 低阈值
             memoryThreshold: 60.0
-            imbalanceThreshold: 15.0                 # 低不均衡阈值
-            maxReschedulePods: 20                    # 允许更多重调度
             
             excludedNamespaces:
               - "kube-system"

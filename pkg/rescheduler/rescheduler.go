@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sync"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/yaml"
@@ -14,6 +17,7 @@ import (
 
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
+	metricsClient "k8s.io/metrics/pkg/client/clientset/versioned"
 )
 
 const (
@@ -47,6 +51,10 @@ type ReschedulerConfig struct {
 	CPUScoreWeight               float64 `json:"cpuScoreWeight,omitempty"`
 	MemoryScoreWeight            float64 `json:"memoryScoreWeight,omitempty"`
 	LoadBalanceBonus             float64 `json:"loadBalanceBonus,omitempty"`
+
+	// 控制器配置
+	EnableReschedulingController bool   `json:"enableReschedulingController,omitempty"`
+	ReschedulingInterval         string `json:"reschedulingInterval,omitempty"`
 }
 
 // Rescheduler 重调度器结构体
@@ -56,6 +64,33 @@ type Rescheduler struct {
 	config     *ReschedulerConfig
 	podLister  corelisters.PodLister
 	nodeLister corelisters.NodeLister
+
+	// 重调度控制器
+	controller *ReschedulingController
+
+	// 资源预留管理器
+	reservationManager *ReservationManager
+
+	// 资源计算器
+	resourceCalculator *ResourceCalculator
+}
+
+// ResourceRequests 封装资源请求信息
+type ResourceRequests struct {
+	CPU    int64 // 毫核
+	Memory int64 // 字节
+}
+
+// NodeCapacity 封装节点容量信息
+type NodeCapacity struct {
+	CPU    int64 // 毫核
+	Memory int64 // 字节
+}
+
+// ResourceUsagePercent 封装资源使用率
+type ResourceUsagePercent struct {
+	CPU    float64
+	Memory float64
 }
 
 // NodeResourceUsage 节点资源使用情况
@@ -69,10 +104,156 @@ type NodeResourceUsage struct {
 	Score              float64
 }
 
+// ============================= 资源计算器 =============================
+
+// ResourceCalculator 资源计算器 - 封装所有资源计算逻辑
+type ResourceCalculator struct {
+	config *ReschedulerConfig // 添加配置引用，统一使用权重和阈值
+}
+
+// NewResourceCalculator 创建资源计算器
+func NewResourceCalculator(config *ReschedulerConfig) *ResourceCalculator {
+	return &ResourceCalculator{
+		config: config,
+	}
+}
+
+// CalculatePodResourceRequests 计算Pod的资源需求
+func (rc *ResourceCalculator) CalculatePodResourceRequests(pod *v1.Pod) ResourceRequests {
+	var cpuRequests, memoryRequests int64
+
+	for _, container := range pod.Spec.Containers {
+		if cpu := container.Resources.Requests.Cpu(); cpu != nil {
+			cpuRequests += cpu.MilliValue()
+		}
+		if memory := container.Resources.Requests.Memory(); memory != nil {
+			memoryRequests += memory.Value()
+		}
+	}
+
+	return ResourceRequests{
+		CPU:    cpuRequests,
+		Memory: memoryRequests,
+	}
+}
+
+// GetNodeCapacity 获取节点容量
+func (rc *ResourceCalculator) GetNodeCapacity(node *v1.Node) NodeCapacity {
+	var cpuCapacity, memoryCapacity int64
+
+	if cpu := node.Status.Capacity.Cpu(); cpu != nil {
+		cpuCapacity = cpu.MilliValue()
+	}
+	if memory := node.Status.Capacity.Memory(); memory != nil {
+		memoryCapacity = memory.Value()
+	}
+
+	return NodeCapacity{
+		CPU:    cpuCapacity,
+		Memory: memoryCapacity,
+	}
+}
+
+// CalculateUsagePercent 计算资源使用率百分比
+func (rc *ResourceCalculator) CalculateUsagePercent(requests ResourceRequests, capacity NodeCapacity) ResourceUsagePercent {
+	var cpuPercent, memoryPercent float64
+
+	if capacity.CPU > 0 {
+		cpuPercent = float64(requests.CPU) / float64(capacity.CPU) * 100.0
+	}
+	if capacity.Memory > 0 {
+		memoryPercent = float64(requests.Memory) / float64(capacity.Memory) * 100.0
+	}
+
+	return ResourceUsagePercent{
+		CPU:    cpuPercent,
+		Memory: memoryPercent,
+	}
+}
+
+// CalculateScore 计算综合分数 - 统一使用配置权重
+func (rc *ResourceCalculator) CalculateScore(usage ResourceUsagePercent) float64 {
+	// 使用配置的权重计算分数
+	cpuScore := (100.0 - usage.CPU) * rc.config.CPUScoreWeight
+	memoryScore := (100.0 - usage.Memory) * rc.config.MemoryScoreWeight
+	totalScore := cpuScore + memoryScore
+
+	// 低负载奖励
+	if usage.CPU < 30 && usage.Memory < 30 {
+		totalScore += rc.config.LoadBalanceBonus
+	}
+
+	return totalScore
+}
+
+// IsOverloaded 检查节点是否过载 - 统一阈值检查逻辑
+func (rc *ResourceCalculator) IsOverloaded(usage ResourceUsagePercent) (bool, string) {
+	var reasons []string
+
+	if usage.CPU > rc.config.CPUThreshold {
+		reasons = append(reasons, fmt.Sprintf("CPU使用率%.1f%%超过阈值%.1f%%", usage.CPU, rc.config.CPUThreshold))
+	}
+
+	if usage.Memory > rc.config.MemoryThreshold {
+		reasons = append(reasons, fmt.Sprintf("内存使用率%.1f%%超过阈值%.1f%%", usage.Memory, rc.config.MemoryThreshold))
+	}
+
+	if len(reasons) > 0 {
+		return true, fmt.Sprintf("节点过载: %v", reasons)
+	}
+
+	return false, ""
+}
+
+// CalculateUsageFromMetrics 从真实指标计算使用率 - 统一指标转换逻辑
+func (rc *ResourceCalculator) CalculateUsageFromMetrics(cpuUsage, memoryUsage, cpuCapacity, memoryCapacity resource.Quantity) ResourceUsagePercent {
+	var cpuPercent, memoryPercent float64
+
+	if !cpuCapacity.IsZero() {
+		cpuPercent = float64(cpuUsage.MilliValue()) / float64(cpuCapacity.MilliValue()) * 100.0
+	}
+
+	if !memoryCapacity.IsZero() {
+		memoryPercent = float64(memoryUsage.Value()) / float64(memoryCapacity.Value()) * 100.0
+	}
+
+	return ResourceUsagePercent{
+		CPU:    cpuPercent,
+		Memory: memoryPercent,
+	}
+}
+
+// CalculateNodeScoreFromMetrics 直接从指标计算节点分数 - 统一评分逻辑
+func (rc *ResourceCalculator) CalculateNodeScoreFromMetrics(cpuPercent, memoryPercent float64) float64 {
+	usage := ResourceUsagePercent{
+		CPU:    cpuPercent,
+		Memory: memoryPercent,
+	}
+	return rc.CalculateScore(usage)
+}
+
+// ============================= 资源预留管理器 =============================
+
+// ReservationInfo 资源预留信息
+type ReservationInfo struct {
+	PodKey         string // pod的唯一标识，格式为 "namespace/name"
+	NodeName       string // 预留的节点名称
+	CPUReserved    int64  // 预留的CPU资源 (毫核)
+	MemoryReserved int64  // 预留的内存资源 (字节)
+	Timestamp      int64  // 预留时间戳
+}
+
+// ReservationManager 资源预留管理器
+type ReservationManager struct {
+	mu           sync.RWMutex
+	reservations map[string]*ReservationInfo // key: podKey, value: ReservationInfo
+}
+
 // 确保Rescheduler实现了相关接口
 var _ framework.Plugin = &Rescheduler{}
 var _ framework.FilterPlugin = &Rescheduler{}
 var _ framework.ScorePlugin = &Rescheduler{}
+var _ framework.ReservePlugin = &Rescheduler{}
 var _ framework.PreBindPlugin = &Rescheduler{}
 
 // Name 返回插件名称
@@ -89,12 +270,14 @@ func New(ctx context.Context, obj runtime.Object, h framework.Handle) (framework
 	config := &ReschedulerConfig{
 		CPUThreshold:                 DefaultCPUThreshold,
 		MemoryThreshold:              DefaultMemoryThreshold,
-		ExcludedNamespaces:           []string{"kube-system", "kube-public"},
+		ExcludedNamespaces:           []string{"kube-system"},
 		EnableSchedulingOptimization: true,
 		EnablePreventiveRescheduling: true,
 		CPUScoreWeight:               DefaultCPUScoreWeight,
 		MemoryScoreWeight:            DefaultMemoryScoreWeight,
 		LoadBalanceBonus:             DefaultLoadBalanceBonus,
+		EnableReschedulingController: true,
+		ReschedulingInterval:         "30s",
 	}
 
 	// 从obj中解析实际配置
@@ -110,10 +293,115 @@ func New(ctx context.Context, obj runtime.Object, h framework.Handle) (framework
 		config:     config,
 		podLister:  h.SharedInformerFactory().Core().V1().Pods().Lister(),
 		nodeLister: h.SharedInformerFactory().Core().V1().Nodes().Lister(),
+		reservationManager: &ReservationManager{
+			reservations: make(map[string]*ReservationInfo),
+		},
+		resourceCalculator: NewResourceCalculator(config),
+	}
+
+	// 初始化重调度控制器（如果启用）
+	if config.EnableReschedulingController {
+		logger.Info("初始化重调度控制器")
+
+		// 创建Metrics客户端
+		metricsClient, err := metricsClient.NewForConfig(h.KubeConfig())
+		if err != nil {
+			logger.Error(err, "创建Metrics客户端失败，禁用重调度控制器")
+		} else {
+			controller := NewReschedulingController(
+				h.ClientSet(),
+				metricsClient,
+				h.SharedInformerFactory().Core().V1().Pods().Lister(),
+				h.SharedInformerFactory().Core().V1().Nodes().Lister(),
+				config,
+			)
+
+			rescheduler.controller = controller
+
+			// 启动控制器
+			go func() {
+				logger.Info("启动重调度控制器")
+				if err := controller.Run(ctx); err != nil {
+					logger.Error(err, "重调度控制器运行失败")
+				}
+			}()
+		}
 	}
 
 	return rescheduler, nil
 }
+
+// ============================= 调度器插件接口实现 =============================
+
+// Reserve 实现ReservePlugin接口 - 资源预留机制
+func (r *Rescheduler) Reserve(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeName string) *framework.Status {
+	if !r.config.EnableSchedulingOptimization {
+		return nil // 如果未启用优化，直接通过
+	}
+
+	// 获取节点信息
+	node, err := r.nodeLister.Get(nodeName)
+	if err != nil {
+		return framework.AsStatus(fmt.Errorf("获取节点信息失败: %v", err))
+	}
+
+	// 计算Pod的资源需求
+	podRequests := r.resourceCalculator.CalculatePodResourceRequests(pod)
+
+	// 预测资源使用情况（考虑现有预留资源）
+	predictedUsage := r.predictNodeUsageAfterPodSchedulingWithReservations(node, pod)
+
+	// 记录资源预留信息
+	podKey := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+	r.reservationManager.Reserve(podKey, nodeName, podRequests.CPU, podRequests.Memory)
+
+	r.logger.V(3).Info("资源预留成功",
+		"pod", podKey,
+		"node", nodeName,
+		"cpuReserved", podRequests.CPU,
+		"memoryReserved", podRequests.Memory,
+		"predictedCPU", predictedUsage.CPUUsagePercent,
+		"predictedMemory", predictedUsage.MemoryUsagePercent)
+
+	// 检查预留后是否会导致严重过载
+	if predictedUsage.CPUUsagePercent > 95.0 || predictedUsage.MemoryUsagePercent > 95.0 {
+		// 如果过载，需要取消预留
+		r.reservationManager.Unreserve(podKey)
+		return framework.NewStatus(framework.Unschedulable,
+			fmt.Sprintf("预留资源后节点将严重过载 CPU:%.1f%% Memory:%.1f%%",
+				predictedUsage.CPUUsagePercent, predictedUsage.MemoryUsagePercent))
+	}
+
+	return nil
+}
+
+// Unreserve 实现ReservePlugin接口 - 释放资源预留
+func (r *Rescheduler) Unreserve(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeName string) {
+	if !r.config.EnableSchedulingOptimization {
+		return
+	}
+
+	podKey := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+
+	// 释放资源预留
+	reservation := r.reservationManager.Unreserve(podKey)
+
+	if reservation != nil {
+		r.logger.V(3).Info("资源预留释放成功",
+			"pod", podKey,
+			"node", nodeName,
+			"cpuReleased", reservation.CPUReserved,
+			"memoryReleased", reservation.MemoryReserved,
+			"reason", "调度失败或取消")
+	} else {
+		r.logger.V(4).Info("未找到对应的资源预留记录",
+			"pod", podKey,
+			"node", nodeName,
+			"reason", "可能已被释放或未曾预留")
+	}
+}
+
+// ============================= 节点分析辅助方法 =============================
 
 // calculateNodeUsages 计算节点资源使用情况
 func (r *Rescheduler) calculateNodeUsages(nodes []*v1.Node, pods []*v1.Pod) map[string]*NodeResourceUsage {
@@ -149,48 +437,33 @@ func (r *Rescheduler) calculateNodeUsages(nodes []*v1.Node, pods []*v1.Pod) map[
 
 		usage.PodCount++
 
-		// 计算资源请求
-		for _, container := range pod.Spec.Containers {
-			if cpu := container.Resources.Requests.Cpu(); cpu != nil {
-				// 累加CPU请求 (转换为毫核)
-				usage.CPURequests += cpu.MilliValue()
-			}
-			if memory := container.Resources.Requests.Memory(); memory != nil {
-				// 累加内存请求 (单位为字节)
-				usage.MemoryRequests += memory.Value()
-			}
-		}
+		// 使用资源计算器计算Pod资源需求
+		podRequests := r.resourceCalculator.CalculatePodResourceRequests(pod)
+		usage.CPURequests += podRequests.CPU
+		usage.MemoryRequests += podRequests.Memory
 	}
 
 	// 计算资源使用百分比
 	for _, usage := range nodeUsages {
 		node := usage.Node
 
-		// 获取节点容量
-		cpuCapacity := node.Status.Capacity.Cpu()
-		memCapacity := node.Status.Capacity.Memory()
+		// 使用资源计算器获取节点容量
+		capacity := r.resourceCalculator.GetNodeCapacity(node)
 
-		if cpuCapacity != nil && memCapacity != nil {
-			// 计算实际的资源使用率
-			cpuCapacityMilliValue := cpuCapacity.MilliValue()
-			memCapacityValue := memCapacity.Value()
-
-			if cpuCapacityMilliValue > 0 {
-				usage.CPUUsagePercent = float64(usage.CPURequests) / float64(cpuCapacityMilliValue) * 100.0
-			}
-
-			if memCapacityValue > 0 {
-				usage.MemoryUsagePercent = float64(usage.MemoryRequests) / float64(memCapacityValue) * 100.0
-			}
-
-			// 计算综合分数 (使用率越低分数越高)
-			usage.Score = 200.0 - usage.CPUUsagePercent - usage.MemoryUsagePercent
+		// 计算使用率
+		requests := ResourceRequests{
+			CPU:    usage.CPURequests,
+			Memory: usage.MemoryRequests,
 		}
+		usagePercent := r.resourceCalculator.CalculateUsagePercent(requests, capacity)
+
+		usage.CPUUsagePercent = usagePercent.CPU
+		usage.MemoryUsagePercent = usagePercent.Memory
+		usage.Score = r.resourceCalculator.CalculateScore(usagePercent)
 	}
 
 	return nodeUsages
 }
-
 
 // Filter 实现FilterPlugin接口 - 在调度新Pod时过滤过载节点
 func (r *Rescheduler) Filter(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) *framework.Status {
@@ -201,17 +474,14 @@ func (r *Rescheduler) Filter(ctx context.Context, state *framework.CycleState, p
 	// 获取当前节点资源使用情况
 	nodeUsage := r.getNodeUsage(nodeInfo.Node())
 
-	// 检查节点是否过载
-	if nodeUsage.CPUUsagePercent > r.config.CPUThreshold {
-		return framework.NewStatus(framework.Unschedulable,
-			fmt.Sprintf("节点CPU使用率%.1f%%超过阈值%.1f%%",
-				nodeUsage.CPUUsagePercent, r.config.CPUThreshold))
+	// 使用统一的过载检查逻辑
+	usage := ResourceUsagePercent{
+		CPU:    nodeUsage.CPUUsagePercent,
+		Memory: nodeUsage.MemoryUsagePercent,
 	}
 
-	if nodeUsage.MemoryUsagePercent > r.config.MemoryThreshold {
-		return framework.NewStatus(framework.Unschedulable,
-			fmt.Sprintf("节点内存使用率%.1f%%超过阈值%.1f%%",
-				nodeUsage.MemoryUsagePercent, r.config.MemoryThreshold))
+	if isOverloaded, reason := r.resourceCalculator.IsOverloaded(usage); isOverloaded {
+		return framework.NewStatus(framework.Unschedulable, reason)
 	}
 
 	// 检查是否为维护模式节点
@@ -237,18 +507,13 @@ func (r *Rescheduler) Score(ctx context.Context, state *framework.CycleState, po
 	node := nodeInfo.Node()
 	nodeUsage := r.getNodeUsage(node)
 
-	// 计算负载均衡分数 (使用率越低分数越高)
-	// 分数范围: 0-100
-	cpuScore := (100.0 - nodeUsage.CPUUsagePercent) * r.config.CPUScoreWeight
-	memoryScore := (100.0 - nodeUsage.MemoryUsagePercent) * r.config.MemoryScoreWeight
-
-	totalScore := cpuScore + memoryScore
-
-	// 特殊情况加分
-	if nodeUsage.CPUUsagePercent < 30 && nodeUsage.MemoryUsagePercent < 30 {
-		totalScore += r.config.LoadBalanceBonus // 低负载节点额外加分
+	// 使用统一的评分逻辑
+	usage := ResourceUsagePercent{
+		CPU:    nodeUsage.CPUUsagePercent,
+		Memory: nodeUsage.MemoryUsagePercent,
 	}
 
+	totalScore := r.resourceCalculator.CalculateScore(usage)
 	score := int64(math.Max(0, math.Min(100, totalScore)))
 
 	r.logger.V(4).Info("节点打分结果",
@@ -279,7 +544,7 @@ func (r *Rescheduler) PreBind(ctx context.Context, state *framework.CycleState, 
 	}
 
 	// 预测Pod调度后的节点使用情况
-	predictedUsage := r.predictNodeUsageAfterPodScheduling(node, pod)
+	predictedUsage := r.predictNodeUsageAfterPodScheduling(node, pod, false)
 
 	r.logger.Info("Pod调度预测分析",
 		"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
@@ -287,16 +552,19 @@ func (r *Rescheduler) PreBind(ctx context.Context, state *framework.CycleState, 
 		"predictedCPU", predictedUsage.CPUUsagePercent,
 		"predictedMemory", predictedUsage.MemoryUsagePercent)
 
-	// 如果预测调度后节点可能过载，记录警告日志
-	if predictedUsage.CPUUsagePercent > r.config.CPUThreshold ||
-		predictedUsage.MemoryUsagePercent > r.config.MemoryThreshold {
+	// 使用统一的过载检查逻辑进行预警
+	usage := ResourceUsagePercent{
+		CPU:    predictedUsage.CPUUsagePercent,
+		Memory: predictedUsage.MemoryUsagePercent,
+	}
+
+	if isOverloaded, reason := r.resourceCalculator.IsOverloaded(usage); isOverloaded {
 		r.logger.Info("节点资源使用率预警",
 			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
 			"targetNode", nodeName,
 			"predictedCPU", predictedUsage.CPUUsagePercent,
 			"predictedMemory", predictedUsage.MemoryUsagePercent,
-			"cpuThreshold", r.config.CPUThreshold,
-			"memoryThreshold", r.config.MemoryThreshold)
+			"reason", reason)
 	}
 
 	return nil
@@ -320,44 +588,74 @@ func (r *Rescheduler) getNodeUsage(node *v1.Node) *NodeResourceUsage {
 	return &NodeResourceUsage{Node: node}
 }
 
-// predictNodeUsageAfterPodScheduling 预测Pod调度后的节点使用情况
-func (r *Rescheduler) predictNodeUsageAfterPodScheduling(node *v1.Node, newPod *v1.Pod) *NodeResourceUsage {
-	currentUsage := r.getNodeUsage(node)
+// getNodeUsageWithReservations 获取节点实时使用情况（包含预留资源）
+func (r *Rescheduler) getNodeUsageWithReservations(node *v1.Node) *NodeResourceUsage {
+	// 获取基础使用情况
+	baseUsage := r.getNodeUsage(node)
 
-	// 计算新Pod的资源需求
-	var additionalCPU, additionalMemory int64
-	for _, container := range newPod.Spec.Containers {
-		if cpu := container.Resources.Requests.Cpu(); cpu != nil {
-			additionalCPU += cpu.MilliValue()
-		}
-		if memory := container.Resources.Requests.Memory(); memory != nil {
-			additionalMemory += memory.Value()
-		}
+	// 获取预留资源
+	reservedCPU, reservedMemory := r.reservationManager.GetTotalReservedResources(node.Name)
+
+	// 计算包含预留资源的总请求量
+	totalRequests := ResourceRequests{
+		CPU:    baseUsage.CPURequests + reservedCPU,
+		Memory: baseUsage.MemoryRequests + reservedMemory,
 	}
 
-	// 计算预测使用率
-	nodeCapacityCPU := node.Status.Capacity.Cpu().MilliValue()
-	nodeCapacityMemory := node.Status.Capacity.Memory().Value()
-
-	predictedCPUUsage := currentUsage.CPUUsagePercent
-	predictedMemoryUsage := currentUsage.MemoryUsagePercent
-
-	if nodeCapacityCPU > 0 {
-		predictedCPUUsage += float64(additionalCPU) / float64(nodeCapacityCPU) * 100
-	}
-	if nodeCapacityMemory > 0 {
-		predictedMemoryUsage += float64(additionalMemory) / float64(nodeCapacityMemory) * 100
-	}
+	// 使用资源计算器获取节点容量和计算使用率
+	capacity := r.resourceCalculator.GetNodeCapacity(node)
+	usage := r.resourceCalculator.CalculateUsagePercent(totalRequests, capacity)
 
 	return &NodeResourceUsage{
 		Node:               node,
-		CPUUsagePercent:    predictedCPUUsage,
-		MemoryUsagePercent: predictedMemoryUsage,
-		CPURequests:        currentUsage.CPURequests + additionalCPU,
-		MemoryRequests:     currentUsage.MemoryRequests + additionalMemory,
-		PodCount:           currentUsage.PodCount + 1,
+		CPUUsagePercent:    usage.CPU,
+		MemoryUsagePercent: usage.Memory,
+		CPURequests:        totalRequests.CPU,
+		MemoryRequests:     totalRequests.Memory,
+		PodCount:           baseUsage.PodCount,
+		Score:              r.resourceCalculator.CalculateScore(usage),
 	}
 }
+
+// predictNodeUsageAfterPodScheduling 统一的预测方法
+func (r *Rescheduler) predictNodeUsageAfterPodScheduling(node *v1.Node, newPod *v1.Pod, includeReservations bool) *NodeResourceUsage {
+	var currentUsage *NodeResourceUsage
+	if includeReservations {
+		currentUsage = r.getNodeUsageWithReservations(node)
+	} else {
+		currentUsage = r.getNodeUsage(node)
+	}
+
+	// 使用资源计算器计算新Pod的资源需求
+	podRequests := r.resourceCalculator.CalculatePodResourceRequests(newPod)
+
+	// 计算预测的总请求量
+	predictedRequests := ResourceRequests{
+		CPU:    currentUsage.CPURequests + podRequests.CPU,
+		Memory: currentUsage.MemoryRequests + podRequests.Memory,
+	}
+
+	// 使用资源计算器计算预测使用率
+	capacity := r.resourceCalculator.GetNodeCapacity(node)
+	usage := r.resourceCalculator.CalculateUsagePercent(predictedRequests, capacity)
+
+	return &NodeResourceUsage{
+		Node:               node,
+		CPUUsagePercent:    usage.CPU,
+		MemoryUsagePercent: usage.Memory,
+		CPURequests:        predictedRequests.CPU,
+		MemoryRequests:     predictedRequests.Memory,
+		PodCount:           currentUsage.PodCount + 1,
+		Score:              r.resourceCalculator.CalculateScore(usage),
+	}
+}
+
+// predictNodeUsageAfterPodSchedulingWithReservations 兼容性方法（考虑预留资源）
+func (r *Rescheduler) predictNodeUsageAfterPodSchedulingWithReservations(node *v1.Node, newPod *v1.Pod) *NodeResourceUsage {
+	return r.predictNodeUsageAfterPodScheduling(node, newPod, true)
+}
+
+// ============================= 配置解析相关 =============================
 
 // ReschedulerArgs 插件配置参数结构体（支持JSON和YAML）
 type ReschedulerArgs struct {
@@ -369,6 +667,8 @@ type ReschedulerArgs struct {
 	CPUScoreWeight               float64  `json:"cpuScoreWeight,omitempty" yaml:"cpuScoreWeight,omitempty"`
 	MemoryScoreWeight            float64  `json:"memoryScoreWeight,omitempty" yaml:"memoryScoreWeight,omitempty"`
 	LoadBalanceBonus             float64  `json:"loadBalanceBonus,omitempty" yaml:"loadBalanceBonus,omitempty"`
+	EnableReschedulingController *bool    `json:"enableReschedulingController,omitempty" yaml:"enableReschedulingController,omitempty"`
+	ReschedulingInterval         string   `json:"reschedulingInterval,omitempty" yaml:"reschedulingInterval,omitempty"`
 }
 
 // parseConfigData 智能解析配置数据，支持JSON和YAML格式
@@ -520,6 +820,18 @@ func applyPluginConfig(args *ReschedulerArgs, config *ReschedulerConfig, logger 
 		logger.V(2).Info("设置负载均衡奖励", "bonus", args.LoadBalanceBonus)
 	}
 
+	// 重调度控制器开关
+	if args.EnableReschedulingController != nil {
+		config.EnableReschedulingController = *args.EnableReschedulingController
+		logger.V(2).Info("设置重调度控制器开关", "enabled", *args.EnableReschedulingController)
+	}
+
+	// 重调度间隔
+	if args.ReschedulingInterval != "" {
+		config.ReschedulingInterval = args.ReschedulingInterval
+		logger.V(2).Info("设置重调度间隔", "interval", args.ReschedulingInterval)
+	}
+
 	// 验证配置的完整性和合理性
 	return validateConfig(config, logger)
 }
@@ -580,9 +892,102 @@ func validateConfig(config *ReschedulerConfig, logger klog.Logger) error {
 
 // formatConfigSummary 格式化配置摘要用于日志
 func formatConfigSummary(config *ReschedulerConfig) string {
-	return fmt.Sprintf("cpuThreshold=%.1f%%, memoryThreshold=%.1f%%, schedulingOpt=%v, preventive=%v",
+	return fmt.Sprintf("cpuThreshold=%.1f%%, memoryThreshold=%.1f%%, schedulingOpt=%v, preventive=%v, controller=%v",
 		config.CPUThreshold,
 		config.MemoryThreshold,
 		config.EnableSchedulingOptimization,
-		config.EnablePreventiveRescheduling)
+		config.EnablePreventiveRescheduling,
+		config.EnableReschedulingController)
+}
+
+// Stop 停止重调度器
+func (r *Rescheduler) Stop() {
+	if r.controller != nil {
+		r.controller.Stop()
+	}
+}
+
+// =========================== ReservationManager 方法 ===========================
+
+// Reserve 预留资源
+func (rm *ReservationManager) Reserve(podKey, nodeName string, cpuReserved, memoryReserved int64) {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+
+	rm.reservations[podKey] = &ReservationInfo{
+		PodKey:         podKey,
+		NodeName:       nodeName,
+		CPUReserved:    cpuReserved,
+		MemoryReserved: memoryReserved,
+		Timestamp:      getCurrentTimestamp(),
+	}
+}
+
+// Unreserve 释放资源预留
+func (rm *ReservationManager) Unreserve(podKey string) *ReservationInfo {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+
+	if reservation, exists := rm.reservations[podKey]; exists {
+		delete(rm.reservations, podKey)
+		return reservation
+	}
+	return nil
+}
+
+// GetReservation 获取指定Pod的预留信息
+func (rm *ReservationManager) GetReservation(podKey string) *ReservationInfo {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+
+	if reservation, exists := rm.reservations[podKey]; exists {
+		return reservation
+	}
+	return nil
+}
+
+// GetNodeReservations 获取指定节点上的所有预留信息
+func (rm *ReservationManager) GetNodeReservations(nodeName string) []*ReservationInfo {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+
+	var reservations []*ReservationInfo
+	for _, reservation := range rm.reservations {
+		if reservation.NodeName == nodeName {
+			reservations = append(reservations, reservation)
+		}
+	}
+	return reservations
+}
+
+// GetTotalReservedResources 获取指定节点上的总预留资源
+func (rm *ReservationManager) GetTotalReservedResources(nodeName string) (cpuReserved, memoryReserved int64) {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+
+	for _, reservation := range rm.reservations {
+		if reservation.NodeName == nodeName {
+			cpuReserved += reservation.CPUReserved
+			memoryReserved += reservation.MemoryReserved
+		}
+	}
+	return
+}
+
+// CleanupExpiredReservations 清理过期的预留（可选：防止内存泄漏）
+func (rm *ReservationManager) CleanupExpiredReservations(expirationSeconds int64) {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+
+	currentTime := getCurrentTimestamp()
+	for podKey, reservation := range rm.reservations {
+		if currentTime-reservation.Timestamp > expirationSeconds {
+			delete(rm.reservations, podKey)
+		}
+	}
+}
+
+// getCurrentTimestamp 获取当前时间戳
+func getCurrentTimestamp() int64 {
+	return time.Now().Unix()
 }

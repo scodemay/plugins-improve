@@ -1,0 +1,517 @@
+# 重调度器监控配置
+# 包含Prometheus监控、Grafana仪表板、AlertManager告警规则
+
+---
+# ServiceMonitor - Prometheus监控配置
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: rescheduler-scheduler-metrics
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+    component: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: rescheduler-scheduler
+      component: metrics
+  endpoints:
+  - port: https-metrics
+    scheme: https
+    tlsConfig:
+      insecureSkipVerify: true
+    interval: 30s
+    path: /metrics
+    honorLabels: true
+
+---
+# PrometheusRule - 告警规则配置
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: rescheduler-scheduler-alerts
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+    component: alerting
+spec:
+  groups:
+  - name: rescheduler.alerts
+    interval: 30s
+    rules:
+    
+    # 调度器健康状态告警
+    - alert: ReschedulerDown
+      expr: up{job="rescheduler-scheduler-metrics"} == 0
+      for: 1m
+      labels:
+        severity: critical
+        component: rescheduler
+      annotations:
+        summary: "重调度器离线"
+        description: "重调度器已经离线超过1分钟，集群调度可能受到影响"
+        runbook_url: "https://github.com/kubernetes-sigs/scheduler-plugins/blob/main/docs/rescheduler/troubleshooting.md#scheduler-down"
+    
+    # 调度延迟告警
+    - alert: ReschedulerHighSchedulingLatency
+      expr: histogram_quantile(0.95, rate(scheduler_scheduling_attempt_duration_seconds_bucket{job="rescheduler-scheduler-metrics"}[5m])) > 1
+      for: 5m
+      labels:
+        severity: warning
+        component: rescheduler
+      annotations:
+        summary: "调度延迟过高"
+        description: "重调度器95%分位数调度延迟超过1秒，当前值: {{ $value }}秒"
+        runbook_url: "https://github.com/kubernetes-sigs/scheduler-plugins/blob/main/docs/rescheduler/troubleshooting.md#high-latency"
+    
+    # 调度失败率告警
+    - alert: ReschedulerHighFailureRate
+      expr: (rate(scheduler_schedule_attempts_total{job="rescheduler-scheduler-metrics",result="error"}[5m]) / rate(scheduler_schedule_attempts_total{job="rescheduler-scheduler-metrics"}[5m])) > 0.1
+      for: 3m
+      labels:
+        severity: warning
+        component: rescheduler
+      annotations:
+        summary: "调度失败率过高"
+        description: "重调度器调度失败率超过10%，当前值: {{ $value | humanizePercentage }}"
+        runbook_url: "https://github.com/kubernetes-sigs/scheduler-plugins/blob/main/docs/rescheduler/troubleshooting.md#high-failure-rate"
+    
+    # 重调度频率过高告警
+    - alert: ReschedulerHighEvictionRate
+      expr: rate(rescheduler_pod_evictions_total[5m]) > 0.5
+      for: 10m
+      labels:
+        severity: warning
+        component: rescheduler
+      annotations:
+        summary: "重调度频率过高"
+        description: "重调度器Pod驱逐频率过高，每分钟{{ $value }}次，可能影响应用稳定性"
+        runbook_url: "https://github.com/kubernetes-sigs/scheduler-plugins/blob/main/docs/rescheduler/troubleshooting.md#high-eviction-rate"
+    
+    # 节点负载不均衡告警
+    - alert: NodeLoadImbalance
+      expr: (max(node_cpu_usage_percent) - min(node_cpu_usage_percent)) > 40
+      for: 15m
+      labels:
+        severity: info
+        component: rescheduler
+      annotations:
+        summary: "节点负载不均衡"
+        description: "集群节点间CPU使用率差异超过40%，最高{{ $value }}%，可能需要调整重调度策略"
+        runbook_url: "https://github.com/kubernetes-sigs/scheduler-plugins/blob/main/docs/rescheduler/troubleshooting.md#load-imbalance"
+    
+    # 内存使用率过高告警
+    - alert: NodeHighMemoryUsage
+      expr: (node_memory_used_percent) > 90
+      for: 5m
+      labels:
+        severity: critical
+        component: rescheduler
+      annotations:
+        summary: "节点内存使用率过高"
+        description: "节点 {{ $labels.node }} 内存使用率{{ $value }}%，超过90%阈值"
+        runbook_url: "https://github.com/kubernetes-sigs/scheduler-plugins/blob/main/docs/rescheduler/troubleshooting.md#high-memory-usage"
+
+---
+# ConfigMap - Grafana仪表板配置
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rescheduler-grafana-dashboard
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+    component: dashboard
+    grafana_dashboard: "1"
+data:
+  rescheduler-dashboard.json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "重调度器监控仪表板",
+        "description": "监控Kubernetes重调度器的性能和行为",
+        "tags": ["kubernetes", "scheduler", "rescheduler"],
+        "timezone": "browser",
+        "editable": true,
+        "graphTooltip": 1,
+        "time": {
+          "from": "now-1h",
+          "to": "now"
+        },
+        "timepicker": {
+          "refresh_intervals": ["5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h", "2h", "1d"]
+        },
+        "refresh": "30s",
+        "panels": [
+          {
+            "id": 1,
+            "title": "调度器状态概览",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "up{job=\"rescheduler-scheduler-metrics\"}",
+                "legendFormat": "调度器在线状态",
+                "refId": "A"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "thresholds": {
+                  "steps": [
+                    {"color": "red", "value": 0},
+                    {"color": "green", "value": 1}
+                  ]
+                }
+              }
+            },
+            "gridPos": {"h": 8, "w": 6, "x": 0, "y": 0}
+          },
+          {
+            "id": 2,
+            "title": "调度延迟",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "histogram_quantile(0.50, rate(scheduler_scheduling_attempt_duration_seconds_bucket{job=\"rescheduler-scheduler-metrics\"}[5m]))",
+                "legendFormat": "P50",
+                "refId": "A"
+              },
+              {
+                "expr": "histogram_quantile(0.95, rate(scheduler_scheduling_attempt_duration_seconds_bucket{job=\"rescheduler-scheduler-metrics\"}[5m]))",
+                "legendFormat": "P95",
+                "refId": "B"
+              },
+              {
+                "expr": "histogram_quantile(0.99, rate(scheduler_scheduling_attempt_duration_seconds_bucket{job=\"rescheduler-scheduler-metrics\"}[5m]))",
+                "legendFormat": "P99",
+                "refId": "C"
+              }
+            ],
+            "yAxes": [
+              {
+                "label": "延迟 (秒)",
+                "min": 0
+              }
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 6, "y": 0}
+          },
+          {
+            "id": 3,
+            "title": "调度尝试次数",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "rate(scheduler_schedule_attempts_total{job=\"rescheduler-scheduler-metrics\",result=\"scheduled\"}[5m])",
+                "legendFormat": "成功调度/秒",
+                "refId": "A"
+              },
+              {
+                "expr": "rate(scheduler_schedule_attempts_total{job=\"rescheduler-scheduler-metrics\",result=\"error\"}[5m])",
+                "legendFormat": "调度失败/秒",
+                "refId": "B"
+              },
+              {
+                "expr": "rate(scheduler_schedule_attempts_total{job=\"rescheduler-scheduler-metrics\",result=\"unschedulable\"}[5m])",
+                "legendFormat": "无法调度/秒",
+                "refId": "C"
+              }
+            ],
+            "yAxes": [
+              {
+                "label": "次数/秒",
+                "min": 0
+              }
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+          },
+          {
+            "id": 4,
+            "title": "重调度统计",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "rate(rescheduler_pod_evictions_total[5m])",
+                "legendFormat": "Pod驱逐/分钟",
+                "refId": "A"
+              },
+              {
+                "expr": "rescheduler_load_balance_decisions_total",
+                "legendFormat": "负载均衡决策",
+                "refId": "B"
+              },
+              {
+                "expr": "rescheduler_resource_optimization_decisions_total",
+                "legendFormat": "资源优化决策",
+                "refId": "C"
+              }
+            ],
+            "yAxes": [
+              {
+                "label": "次数",
+                "min": 0
+              }
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+          },
+          {
+            "id": 5,
+            "title": "节点资源使用率",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "avg(node_cpu_usage_percent)",
+                "legendFormat": "平均CPU使用率",
+                "refId": "A"
+              },
+              {
+                "expr": "max(node_cpu_usage_percent)",
+                "legendFormat": "最高CPU使用率",
+                "refId": "B"
+              },
+              {
+                "expr": "min(node_cpu_usage_percent)",
+                "legendFormat": "最低CPU使用率",
+                "refId": "C"
+              }
+            ],
+            "yAxes": [
+              {
+                "label": "使用率 (%)",
+                "min": 0,
+                "max": 100
+              }
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16}
+          },
+          {
+            "id": 6,
+            "title": "插件执行统计",
+            "type": "table",
+            "targets": [
+              {
+                "expr": "rate(scheduler_plugin_execution_duration_seconds_count{job=\"rescheduler-scheduler-metrics\"}[5m])",
+                "legendFormat": "{{ plugin }} - {{ extension_point }}",
+                "refId": "A",
+                "format": "table"
+              }
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16}
+          }
+        ]
+      }
+    }
+
+---
+# ConfigMap - 监控脚本
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rescheduler-monitoring-scripts
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+    component: monitoring-tools
+data:
+  check-health.sh: |
+    #!/bin/bash
+    # 重调度器健康检查脚本
+    
+    set -e
+    
+    # 检查调度器Pod状态
+    echo "检查调度器Pod状态..."
+    kubectl get pods -n kube-system -l app=rescheduler-scheduler
+    
+    # 检查调度器日志中的错误
+    echo "检查调度器日志..."
+    kubectl logs -n kube-system -l app=rescheduler-scheduler --tail=100 | grep -i error || echo "无错误日志"
+    
+    # 检查调度器指标端点
+    echo "检查指标端点..."
+    kubectl get endpoints -n kube-system rescheduler-scheduler-metrics
+    
+    # 检查最近的调度事件
+    echo "检查最近的调度事件..."
+    kubectl get events --all-namespaces --field-selector involvedObject.kind=Pod --sort-by='.lastTimestamp' | tail -10
+    
+    echo "健康检查完成"
+  
+  metrics-collector.sh: |
+    #!/bin/bash
+    # 重调度器指标收集脚本
+    
+    METRICS_FILE="rescheduler-metrics-$(date +%Y%m%d-%H%M%S).txt"
+    
+    echo "收集重调度器指标到: $METRICS_FILE"
+    
+    {
+        echo "=== 时间戳 ==="
+        date
+        echo ""
+        
+        echo "=== 调度器状态 ==="
+        kubectl get pods -n kube-system -l app=rescheduler-scheduler -o wide
+        echo ""
+        
+        echo "=== 节点资源使用率 ==="
+        kubectl top nodes || echo "Metrics Server不可用"
+        echo ""
+        
+        echo "=== Pod分布情况 ==="
+        kubectl get pods --all-namespaces -o wide | awk '{print $8}' | sort | uniq -c | sort -nr
+        echo ""
+        
+        echo "=== 最近的重调度事件 ==="
+        kubectl get events --all-namespaces --field-selector reason=Evicted --sort-by='.lastTimestamp' | tail -20
+        echo ""
+        
+        echo "=== 调度器配置 ==="
+        kubectl get configmap -n kube-system rescheduler-config -o yaml
+        echo ""
+        
+    } > "$METRICS_FILE"
+    
+    echo "指标收集完成: $METRICS_FILE"
+  
+  load-test.sh: |
+    #!/bin/bash
+    # 重调度器负载测试脚本
+    
+    NAMESPACE=${1:-default}
+    POD_COUNT=${2:-50}
+    
+    echo "开始负载测试: 在命名空间 $NAMESPACE 中创建 $POD_COUNT 个Pod"
+    
+    # 创建负载测试部署
+    kubectl apply -f - <<EOF
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: rescheduler-load-test
+      namespace: $NAMESPACE
+    spec:
+      replicas: $POD_COUNT
+      selector:
+        matchLabels:
+          app: rescheduler-load-test
+      template:
+        metadata:
+          labels:
+            app: rescheduler-load-test
+        spec:
+          schedulerName: rescheduler-scheduler
+          containers:
+          - name: pause
+            image: k8s.gcr.io/pause:3.9
+            resources:
+              requests:
+                cpu: "10m"
+                memory: "16Mi"
+    EOF
+    
+    echo "等待Pod调度完成..."
+    kubectl rollout status deployment/rescheduler-load-test -n $NAMESPACE --timeout=300s
+    
+    echo "负载测试完成，Pod分布情况："
+    kubectl get pods -n $NAMESPACE -l app=rescheduler-load-test -o wide | awk '{print $7}' | sort | uniq -c
+    
+    echo "清理负载测试资源..."
+    kubectl delete deployment rescheduler-load-test -n $NAMESPACE
+    
+    echo "负载测试完成"
+
+---
+# CronJob - 定期健康检查
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: rescheduler-health-check
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+    component: health-check
+spec:
+  schedule: "*/10 * * * *"  # 每10分钟执行一次
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: rescheduler-scheduler
+          containers:
+          - name: health-check
+            image: bitnami/kubectl:latest
+            command:
+            - /bin/bash
+            - /scripts/check-health.sh
+            volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+          restartPolicy: OnFailure
+          volumes:
+          - name: scripts
+            configMap:
+              name: rescheduler-monitoring-scripts
+              defaultMode: 0755
+
+---
+# Service - 监控端点暴露
+apiVersion: v1
+kind: Service
+metadata:
+  name: rescheduler-monitoring
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+    component: monitoring-service
+spec:
+  type: ClusterIP
+  selector:
+    app: rescheduler-scheduler
+  ports:
+  - name: metrics
+    port: 10259
+    targetPort: 10259
+    protocol: TCP
+  - name: health
+    port: 10251
+    targetPort: 10251
+    protocol: TCP
+
+---
+# NetworkPolicy - 监控网络策略
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rescheduler-monitoring-policy
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+    component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: rescheduler-scheduler
+  policyTypes:
+  - Ingress
+  ingress:
+  # 允许Prometheus抓取指标
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    - namespaceSelector:
+        matchLabels:
+          name: prometheus
+    ports:
+    - protocol: TCP
+      port: 10259
+  # 允许健康检查
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    ports:
+    - protocol: TCP
+      port: 10251
+
