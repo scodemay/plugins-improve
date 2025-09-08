@@ -5,16 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"sort"
-	"sync"
-	"time"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/util/yaml"
-	clientset "k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
 
 	"k8s.io/klog/v2"
@@ -25,18 +20,11 @@ const (
 	// Name 是重调度器插件在注册表和配置中使用的名称
 	Name = "Rescheduler"
 
-	// 重调度策略
-	LoadBalancingStrategy        = "LoadBalancing"
-	ResourceOptimizationStrategy = "ResourceOptimization"
-	NodeMaintenanceStrategy      = "NodeMaintenance"
-
 	// 默认配置
-	DefaultReschedulingInterval = 30 * time.Second
-	DefaultCPUThreshold         = 10.0 // 降低到10%，更容易触发
-	DefaultMemoryThreshold      = 20.0 // 降低到20%
-	DefaultImbalanceThreshold   = 5.0  // 降低到5%，更敏感
+	DefaultCPUThreshold    = 80.0 // CPU使用率阈值
+	DefaultMemoryThreshold = 80.0 // 内存使用率阈值
 
-	// 新增：调度优化默认配置
+	// 调度优化默认配置
 	DefaultCPUScoreWeight    = 0.6
 	DefaultMemoryScoreWeight = 0.4
 	DefaultLoadBalanceBonus  = 10.0
@@ -44,29 +32,14 @@ const (
 
 // ReschedulerConfig 重调度器配置
 type ReschedulerConfig struct {
-	// 重调度间隔
-	ReschedulingInterval time.Duration `json:"reschedulingInterval,omitempty"`
-
-	// 启用的策略
-	EnabledStrategies []string `json:"enabledStrategies,omitempty"`
-
 	// CPU使用率阈值 (%)
 	CPUThreshold float64 `json:"cpuThreshold,omitempty"`
 
 	// 内存使用率阈值 (%)
 	MemoryThreshold float64 `json:"memoryThreshold,omitempty"`
 
-	// 负载不均衡阈值 (%)
-	ImbalanceThreshold float64 `json:"imbalanceThreshold,omitempty"`
-
-	// 最大重调度Pod数量
-	MaxReschedulePods int `json:"maxReschedulePods,omitempty"`
-
 	// 排除的命名空间
 	ExcludedNamespaces []string `json:"excludedNamespaces,omitempty"`
-
-	// 排除的Pod标签选择器
-	ExcludedPodSelector string `json:"excludedPodSelector,omitempty"`
 
 	// 调度优化配置
 	EnableSchedulingOptimization bool    `json:"enableSchedulingOptimization,omitempty"`
@@ -81,31 +54,8 @@ type Rescheduler struct {
 	logger     klog.Logger
 	handle     framework.Handle
 	config     *ReschedulerConfig
-	clientset  clientset.Interface
 	podLister  corelisters.PodLister
 	nodeLister corelisters.NodeLister
-
-	// 重调度控制器 - 负责执行实际的Pod迁移
-	controller *ReschedulerController
-
-	// Deployment协调器 - 避免与Deployment Controller冲突
-	deploymentCoordinator *DeploymentCoordinator
-
-	// 停止信号
-	stopCh chan struct{}
-
-	// 预防性重调度缓存（并发安全）
-	recentReschedulingTargets map[string]time.Time
-	targetsMutex              sync.RWMutex
-}
-
-// ReschedulingDecision 重调度决策
-type ReschedulingDecision struct {
-	Pod        *v1.Pod `json:"pod"`
-	SourceNode string  `json:"sourceNode"`
-	TargetNode string  `json:"targetNode"`
-	Reason     string  `json:"reason"`
-	Strategy   string  `json:"strategy"`
 }
 
 // NodeResourceUsage 节点资源使用情况
@@ -137,12 +87,8 @@ func New(ctx context.Context, obj runtime.Object, h framework.Handle) (framework
 
 	// 解析配置
 	config := &ReschedulerConfig{
-		ReschedulingInterval:         DefaultReschedulingInterval,
-		EnabledStrategies:            []string{LoadBalancingStrategy, ResourceOptimizationStrategy},
 		CPUThreshold:                 DefaultCPUThreshold,
 		MemoryThreshold:              DefaultMemoryThreshold,
-		ImbalanceThreshold:           DefaultImbalanceThreshold,
-		MaxReschedulePods:            10,
 		ExcludedNamespaces:           []string{"kube-system", "kube-public"},
 		EnableSchedulingOptimization: true,
 		EnablePreventiveRescheduling: true,
@@ -158,134 +104,15 @@ func New(ctx context.Context, obj runtime.Object, h framework.Handle) (framework
 		}
 	}
 
-	// 创建重调度控制器
-	controller := NewReschedulerController(
-		h.ClientSet(),
-		h.SharedInformerFactory(),
-	)
-
-	// 创建Deployment协调器
-	deploymentCoordinator := NewDeploymentCoordinator(
-		h.ClientSet(),
-		h.SharedInformerFactory().Apps().V1().Deployments().Lister(),
-		h.SharedInformerFactory().Apps().V1().ReplicaSets().Lister(),
-		h.SharedInformerFactory().Core().V1().Pods().Lister(),
-	)
-
 	rescheduler := &Rescheduler{
-		logger:                    logger,
-		handle:                    h,
-		config:                    config,
-		clientset:                 h.ClientSet(),
-		podLister:                 h.SharedInformerFactory().Core().V1().Pods().Lister(),
-		nodeLister:                h.SharedInformerFactory().Core().V1().Nodes().Lister(),
-		controller:                controller,
-		deploymentCoordinator:     deploymentCoordinator,
-		stopCh:                    make(chan struct{}),
-		recentReschedulingTargets: make(map[string]time.Time),
+		logger:     logger,
+		handle:     h,
+		config:     config,
+		podLister:  h.SharedInformerFactory().Core().V1().Pods().Lister(),
+		nodeLister: h.SharedInformerFactory().Core().V1().Nodes().Lister(),
 	}
-
-	// 启动重调度控制器
-	go func() {
-		if err := controller.Run(ctx, 2); err != nil {
-			logger.Error(err, "重调度控制器运行失败")
-		}
-	}()
-
-	// 启动重调度器控制循环
-	go rescheduler.run(ctx)
 
 	return rescheduler, nil
-}
-
-// run 运行重调度器主循环
-func (r *Rescheduler) run(ctx context.Context) {
-	r.logger.Info("重调度器开始运行", "interval", r.config.ReschedulingInterval)
-
-	wait.Until(func() {
-		if err := r.performRescheduling(ctx); err != nil {
-			r.logger.Error(err, "重调度过程中发生错误")
-		}
-	}, r.config.ReschedulingInterval, r.stopCh)
-}
-
-// performRescheduling 执行重调度逻辑
-func (r *Rescheduler) performRescheduling(ctx context.Context) error {
-	r.logger.V(2).Info("开始执行重调度检查")
-
-	// 获取所有节点和Pod
-	nodes, err := r.nodeLister.List(labels.Everything())
-	if err != nil {
-		return fmt.Errorf("获取节点列表失败: %v", err)
-	}
-
-	pods, err := r.podLister.List(labels.Everything())
-	if err != nil {
-		return fmt.Errorf("获取Pod列表失败: %v", err)
-	}
-
-	// 计算节点资源使用情况
-	nodeUsages := r.calculateNodeUsages(nodes, pods)
-
-	var allDecisions []ReschedulingDecision
-
-	// 执行启用的重调度策略
-	for _, strategy := range r.config.EnabledStrategies {
-		switch strategy {
-		case LoadBalancingStrategy:
-			decisions := r.performLoadBalancing(nodeUsages, pods)
-			allDecisions = append(allDecisions, decisions...)
-		case ResourceOptimizationStrategy:
-			decisions := r.performResourceOptimization(nodeUsages, pods)
-			allDecisions = append(allDecisions, decisions...)
-		case NodeMaintenanceStrategy:
-			decisions := r.performNodeMaintenance(nodeUsages, pods)
-			allDecisions = append(allDecisions, decisions...)
-		}
-	}
-
-	// 调试：输出决策数量
-	r.logger.Info("重调度决策生成", "决策数量", len(allDecisions), "最大重调度数量", r.config.MaxReschedulePods)
-
-	// 限制重调度数量
-	if len(allDecisions) > r.config.MaxReschedulePods {
-		allDecisions = allDecisions[:r.config.MaxReschedulePods]
-	}
-
-	// 执行重调度决策 - 使用协调机制避免冲突
-	for _, decision := range allDecisions {
-		// 优先使用Deployment协调器，回退到原有控制器
-		r.logger.Info("检查协调器状态", "deploymentCoordinator", r.deploymentCoordinator != nil)
-		if r.deploymentCoordinator != nil {
-			r.logger.Info("启用协调重调度", "pod", fmt.Sprintf("%s/%s", decision.Pod.Namespace, decision.Pod.Name))
-			err := r.deploymentCoordinator.CoordinatedRescheduling(ctx, decision)
-			if err != nil {
-				r.logger.Error(err, "协调重调度失败，回退到原有机制",
-					"pod", fmt.Sprintf("%s/%s", decision.Pod.Namespace, decision.Pod.Name))
-				// 回退到原有机制
-				if err := r.controller.ExecuteMigration(ctx, decision); err != nil {
-					r.logger.Error(err, "提交Pod迁移任务失败",
-						"pod", fmt.Sprintf("%s/%s", decision.Pod.Namespace, decision.Pod.Name),
-						"sourceNode", decision.SourceNode,
-						"targetNode", decision.TargetNode)
-				}
-			}
-		} else {
-			// 没有协调器时使用原有机制
-			if err := r.controller.ExecuteMigration(ctx, decision); err != nil {
-				r.logger.Error(err, "提交Pod迁移任务失败",
-					"pod", fmt.Sprintf("%s/%s", decision.Pod.Namespace, decision.Pod.Name),
-					"sourceNode", decision.SourceNode,
-					"targetNode", decision.TargetNode)
-			}
-		}
-	}
-
-	if len(allDecisions) > 0 {
-		r.logger.Info("完成重调度操作", "重调度Pod数量", len(allDecisions))
-	}
-
-	return nil
 }
 
 // calculateNodeUsages 计算节点资源使用情况
@@ -364,206 +191,6 @@ func (r *Rescheduler) calculateNodeUsages(nodes []*v1.Node, pods []*v1.Pod) map[
 	return nodeUsages
 }
 
-// performLoadBalancing 执行负载均衡重调度
-func (r *Rescheduler) performLoadBalancing(nodeUsages map[string]*NodeResourceUsage, pods []*v1.Pod) []ReschedulingDecision {
-	var decisions []ReschedulingDecision
-
-	// 按使用率排序节点
-	var sortedNodes []*NodeResourceUsage
-	for _, usage := range nodeUsages {
-		sortedNodes = append(sortedNodes, usage)
-	}
-
-	sort.Slice(sortedNodes, func(i, j int) bool {
-		return sortedNodes[i].CPUUsagePercent > sortedNodes[j].CPUUsagePercent
-	})
-
-	if len(sortedNodes) < 2 {
-		return decisions
-	}
-
-	// 检查是否需要负载均衡
-	highestUsage := sortedNodes[0].CPUUsagePercent
-	lowestUsage := sortedNodes[len(sortedNodes)-1].CPUUsagePercent
-
-	if highestUsage-lowestUsage > r.config.ImbalanceThreshold {
-		// 从高负载节点迁移Pod到低负载节点
-		sourceNode := sortedNodes[0]
-		targetNode := sortedNodes[len(sortedNodes)-1]
-
-		// 查找可迁移的Pod
-		candidatePods := r.findMigratablePods(pods, sourceNode.Node.Name)
-
-		if len(candidatePods) > 0 {
-			decisions = append(decisions, ReschedulingDecision{
-				Pod:        candidatePods[0],
-				SourceNode: sourceNode.Node.Name,
-				TargetNode: targetNode.Node.Name,
-				Reason:     fmt.Sprintf("负载均衡: 源节点使用率%.1f%%, 目标节点使用率%.1f%%", highestUsage, lowestUsage),
-				Strategy:   LoadBalancingStrategy,
-			})
-		}
-	}
-
-	return decisions
-}
-
-// performResourceOptimization 执行资源优化重调度
-func (r *Rescheduler) performResourceOptimization(nodeUsages map[string]*NodeResourceUsage, pods []*v1.Pod) []ReschedulingDecision {
-	var decisions []ReschedulingDecision
-
-	// 查找高负载节点
-	for _, usage := range nodeUsages {
-		if usage.CPUUsagePercent > r.config.CPUThreshold || usage.MemoryUsagePercent > r.config.MemoryThreshold {
-			// 查找可迁移的Pod
-			candidatePods := r.findMigratablePods(pods, usage.Node.Name)
-
-			// 查找最佳目标节点
-			targetNode := r.findBestTargetNode(nodeUsages, usage.Node.Name)
-
-			if len(candidatePods) > 0 && targetNode != "" {
-				decisions = append(decisions, ReschedulingDecision{
-					Pod:        candidatePods[0],
-					SourceNode: usage.Node.Name,
-					TargetNode: targetNode,
-					Reason:     fmt.Sprintf("资源优化: 节点CPU使用率%.1f%%, 内存使用率%.1f%%", usage.CPUUsagePercent, usage.MemoryUsagePercent),
-					Strategy:   ResourceOptimizationStrategy,
-				})
-
-				if len(decisions) >= r.config.MaxReschedulePods {
-					break
-				}
-			}
-		}
-	}
-
-	return decisions
-}
-
-// performNodeMaintenance 执行节点维护重调度
-func (r *Rescheduler) performNodeMaintenance(nodeUsages map[string]*NodeResourceUsage, pods []*v1.Pod) []ReschedulingDecision {
-	var decisions []ReschedulingDecision
-
-	// 检查是否有节点需要维护 (通过注解或标签标识)
-	for _, usage := range nodeUsages {
-		node := usage.Node
-
-		// 检查维护标签
-		if value, exists := node.Labels["scheduler.alpha.kubernetes.io/maintenance"]; exists && value == "true" {
-			// 迁移该节点上的所有Pod
-			candidatePods := r.findMigratablePods(pods, node.Name)
-
-			for _, pod := range candidatePods {
-				targetNode := r.findBestTargetNode(nodeUsages, node.Name)
-				if targetNode != "" {
-					decisions = append(decisions, ReschedulingDecision{
-						Pod:        pod,
-						SourceNode: node.Name,
-						TargetNode: targetNode,
-						Reason:     "节点维护模式",
-						Strategy:   NodeMaintenanceStrategy,
-					})
-				}
-
-				if len(decisions) >= r.config.MaxReschedulePods {
-					break
-				}
-			}
-		}
-	}
-
-	return decisions
-}
-
-// findMigratablePods 查找可迁移的Pod
-func (r *Rescheduler) findMigratablePods(pods []*v1.Pod, nodeName string) []*v1.Pod {
-	var candidatePods []*v1.Pod
-
-	for _, pod := range pods {
-		if pod.Spec.NodeName != nodeName || pod.Status.Phase != v1.PodRunning {
-			continue
-		}
-
-		// 排除系统命名空间
-		if r.isExcludedNamespace(pod.Namespace) {
-			continue
-		}
-
-		// 排除静态Pod
-		if pod.Annotations["kubernetes.io/config.source"] == "api" {
-			continue
-		}
-
-		// 排除DaemonSet Pod
-		for _, ownerRef := range pod.OwnerReferences {
-			if ownerRef.Kind == "DaemonSet" {
-				continue
-			}
-		}
-
-		// 检查Pod是否有特殊的重调度排除标签
-		if value, exists := pod.Labels["scheduler.alpha.kubernetes.io/rescheduling"]; exists && value == "disabled" {
-			continue
-		}
-
-		candidatePods = append(candidatePods, pod)
-	}
-
-	// 按优先级排序 (优先级低的先迁移)
-	sort.Slice(candidatePods, func(i, j int) bool {
-		pi := int32(0)
-		pj := int32(0)
-		if candidatePods[i].Spec.Priority != nil {
-			pi = *candidatePods[i].Spec.Priority
-		}
-		if candidatePods[j].Spec.Priority != nil {
-			pj = *candidatePods[j].Spec.Priority
-		}
-		return pi < pj
-	})
-
-	return candidatePods
-}
-
-// findBestTargetNode 查找最佳目标节点
-func (r *Rescheduler) findBestTargetNode(nodeUsages map[string]*NodeResourceUsage, excludeNode string) string {
-	var bestNode string
-	bestScore := -math.MaxFloat64
-
-	for nodeName, usage := range nodeUsages {
-		if nodeName == excludeNode {
-			continue
-		}
-
-		// 检查节点是否可用
-		if usage.Node.Spec.Unschedulable {
-			continue
-		}
-
-		// 检查资源使用情况
-		if usage.CPUUsagePercent > r.config.CPUThreshold || usage.MemoryUsagePercent > r.config.MemoryThreshold {
-			continue
-		}
-
-		// 选择分数最高的节点
-		if usage.Score > bestScore {
-			bestScore = usage.Score
-			bestNode = nodeName
-		}
-	}
-
-	return bestNode
-}
-
-// isExcludedNamespace 检查命名空间是否被排除
-func (r *Rescheduler) isExcludedNamespace(namespace string) bool {
-	for _, excluded := range r.config.ExcludedNamespaces {
-		if namespace == excluded {
-			return true
-		}
-	}
-	return false
-}
 
 // Filter 实现FilterPlugin接口 - 在调度新Pod时过滤过载节点
 func (r *Rescheduler) Filter(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) *framework.Status {
@@ -622,11 +249,6 @@ func (r *Rescheduler) Score(ctx context.Context, state *framework.CycleState, po
 		totalScore += r.config.LoadBalanceBonus // 低负载节点额外加分
 	}
 
-	// 避免重调度目标节点 - 减少不必要的迁移
-	if r.isRecentReschedulingTarget(node.Name) {
-		totalScore += 5 // 最近作为迁移目标的节点加分
-	}
-
 	score := int64(math.Max(0, math.Min(100, totalScore)))
 
 	r.logger.V(4).Info("节点打分结果",
@@ -644,10 +266,10 @@ func (r *Rescheduler) ScoreExtensions() framework.ScoreExtensions {
 	return nil
 }
 
-// PreBind 增强实现 - 在绑定新Pod前检查是否需要预防性重调度
+// PreBind 增强实现 - 在绑定新Pod前进行预测检查和日志记录
 func (r *Rescheduler) PreBind(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeName string) *framework.Status {
 	if !r.config.EnablePreventiveRescheduling {
-		return nil // 如果未启用预防性重调度，直接通过
+		return nil // 如果未启用预测检查，直接通过
 	}
 
 	// 获取目标节点的当前状态
@@ -665,20 +287,17 @@ func (r *Rescheduler) PreBind(ctx context.Context, state *framework.CycleState, 
 		"predictedCPU", predictedUsage.CPUUsagePercent,
 		"predictedMemory", predictedUsage.MemoryUsagePercent)
 
-	// 如果预测调度后节点仍然健康，直接通过
-	if predictedUsage.CPUUsagePercent <= r.config.CPUThreshold &&
-		predictedUsage.MemoryUsagePercent <= r.config.MemoryThreshold {
-		return nil
+	// 如果预测调度后节点可能过载，记录警告日志
+	if predictedUsage.CPUUsagePercent > r.config.CPUThreshold ||
+		predictedUsage.MemoryUsagePercent > r.config.MemoryThreshold {
+		r.logger.Info("节点资源使用率预警",
+			"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
+			"targetNode", nodeName,
+			"predictedCPU", predictedUsage.CPUUsagePercent,
+			"predictedMemory", predictedUsage.MemoryUsagePercent,
+			"cpuThreshold", r.config.CPUThreshold,
+			"memoryThreshold", r.config.MemoryThreshold)
 	}
-
-	// 如果预测调度后可能过载，触发预防性重调度
-	r.logger.Info("触发预防性重调度",
-		"pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name),
-		"targetNode", nodeName,
-		"reason", "预防节点过载")
-
-	// 异步执行预防性重调度，不阻塞当前Pod调度
-	go r.performPreventiveRescheduling(ctx, nodeName, predictedUsage)
 
 	return nil
 }
@@ -740,140 +359,11 @@ func (r *Rescheduler) predictNodeUsageAfterPodScheduling(node *v1.Node, newPod *
 	}
 }
 
-// performPreventiveRescheduling 执行预防性重调度
-func (r *Rescheduler) performPreventiveRescheduling(ctx context.Context, nodeName string, predictedUsage *NodeResourceUsage) {
-	r.logger.Info("开始执行预防性重调度",
-		"targetNode", nodeName,
-		"predictedCPU", predictedUsage.CPUUsagePercent,
-		"predictedMemory", predictedUsage.MemoryUsagePercent)
-
-	// 获取节点上可迁移的Pod
-	pods, err := r.podLister.List(labels.Everything())
-	if err != nil {
-		r.logger.Error(err, "获取Pod列表失败")
-		return
-	}
-
-	candidatePods := r.findMigratablePods(pods, nodeName)
-	if len(candidatePods) == 0 {
-		r.logger.Info("没有找到可迁移的Pod", "node", nodeName)
-		return
-	}
-
-	// 根据预测使用率决定需要迁移的Pod数量
-	// 使用率越高，迁移的Pod越多（最多3个）
-	var podsToMigrate int
-	avgPredictedUsage := (predictedUsage.CPUUsagePercent + predictedUsage.MemoryUsagePercent) / 2
-	if avgPredictedUsage > 90 {
-		podsToMigrate = 3
-	} else if avgPredictedUsage > 80 {
-		podsToMigrate = 2
-	} else {
-		podsToMigrate = 1
-	}
-
-	// 限制迁移数量不超过可用Pod数量
-	if podsToMigrate > len(candidatePods) {
-		podsToMigrate = len(candidatePods)
-	}
-
-	r.logger.Info("确定迁移策略",
-		"node", nodeName,
-		"avgPredictedUsage", avgPredictedUsage,
-		"podsToMigrate", podsToMigrate,
-		"availablePods", len(candidatePods))
-
-	// 计算节点使用情况（用于找目标节点）
-	nodes, _ := r.nodeLister.List(labels.Everything())
-	nodeUsages := r.calculateNodeUsages(nodes, pods)
-
-	// 为每个需要迁移的Pod执行迁移
-	for i := 0; i < podsToMigrate; i++ {
-		migrationPod := candidatePods[i]
-
-		targetNode := r.findBestTargetNode(nodeUsages, nodeName)
-		if targetNode == "" {
-			r.logger.Info("没有找到合适的目标节点", "sourceNode", nodeName, "podIndex", i)
-			continue
-		}
-
-		// 记录作为迁移目标
-		r.markAsReschedulingTarget(targetNode)
-
-		// 创建预防性重调度决策，包含预测使用率信息
-		reason := fmt.Sprintf("预防性重调度：避免节点过载，预测CPU使用率%.1f%%，内存使用率%.1f%%",
-			predictedUsage.CPUUsagePercent, predictedUsage.MemoryUsagePercent)
-
-		decision := ReschedulingDecision{
-			Pod:        migrationPod,
-			SourceNode: nodeName,
-			TargetNode: targetNode,
-			Reason:     reason,
-			Strategy:   "PreventiveLoadBalancing",
-		}
-
-		// 执行迁移
-		var migrationErr error
-		if r.deploymentCoordinator != nil {
-			migrationErr = r.deploymentCoordinator.CoordinatedRescheduling(ctx, decision)
-		} else {
-			migrationErr = r.controller.ExecuteMigration(ctx, decision)
-		}
-
-		if migrationErr != nil {
-			r.logger.Error(migrationErr, "预防性重调度失败",
-				"decision", decision,
-				"podIndex", i)
-		} else {
-			r.logger.Info("预防性重调度成功",
-				"decision", decision,
-				"podIndex", i)
-		}
-	}
-
-	r.logger.Info("预防性重调度完成",
-		"node", nodeName,
-		"totalPodsAttempted", podsToMigrate)
-}
-
-// isRecentReschedulingTarget 检查节点是否为最近的重调度目标（并发安全）
-func (r *Rescheduler) isRecentReschedulingTarget(nodeName string) bool {
-	r.targetsMutex.RLock()
-	defer r.targetsMutex.RUnlock()
-
-	if lastTime, exists := r.recentReschedulingTargets[nodeName]; exists {
-		// 如果5分钟内作为过迁移目标，给予加分
-		return time.Since(lastTime) < 5*time.Minute
-	}
-	return false
-}
-
-// markAsReschedulingTarget 标记节点为迁移目标（并发安全）
-func (r *Rescheduler) markAsReschedulingTarget(nodeName string) {
-	r.targetsMutex.Lock()
-	defer r.targetsMutex.Unlock()
-
-	r.recentReschedulingTargets[nodeName] = time.Now()
-
-	// 清理过期记录（保持map大小合理）
-	cutoffTime := time.Now().Add(-10 * time.Minute)
-	for node, timestamp := range r.recentReschedulingTargets {
-		if timestamp.Before(cutoffTime) {
-			delete(r.recentReschedulingTargets, node)
-		}
-	}
-}
-
 // ReschedulerArgs 插件配置参数结构体（支持JSON和YAML）
 type ReschedulerArgs struct {
-	ReschedulingInterval         string   `json:"reschedulingInterval,omitempty" yaml:"reschedulingInterval,omitempty"`
-	EnabledStrategies            []string `json:"enabledStrategies,omitempty" yaml:"enabledStrategies,omitempty"`
 	CPUThreshold                 float64  `json:"cpuThreshold,omitempty" yaml:"cpuThreshold,omitempty"`
 	MemoryThreshold              float64  `json:"memoryThreshold,omitempty" yaml:"memoryThreshold,omitempty"`
-	ImbalanceThreshold           float64  `json:"imbalanceThreshold,omitempty" yaml:"imbalanceThreshold,omitempty"`
-	MaxReschedulePods            int      `json:"maxReschedulePods,omitempty" yaml:"maxReschedulePods,omitempty"`
 	ExcludedNamespaces           []string `json:"excludedNamespaces,omitempty" yaml:"excludedNamespaces,omitempty"`
-	ExcludedPodSelector          string   `json:"excludedPodSelector,omitempty" yaml:"excludedPodSelector,omitempty"`
 	EnableSchedulingOptimization *bool    `json:"enableSchedulingOptimization,omitempty" yaml:"enableSchedulingOptimization,omitempty"` // 指针类型支持三态
 	EnablePreventiveRescheduling *bool    `json:"enablePreventiveRescheduling,omitempty" yaml:"enablePreventiveRescheduling,omitempty"` // 指针类型支持三态
 	CPUScoreWeight               float64  `json:"cpuScoreWeight,omitempty" yaml:"cpuScoreWeight,omitempty"`
@@ -970,22 +460,6 @@ func parsePluginConfig(obj runtime.Object, config *ReschedulerConfig, logger klo
 
 // applyPluginConfig 将解析后的配置应用到ReschedulerConfig
 func applyPluginConfig(args *ReschedulerArgs, config *ReschedulerConfig, logger klog.Logger) error {
-	// 解析重调度间隔
-	if args.ReschedulingInterval != "" {
-		interval, err := time.ParseDuration(args.ReschedulingInterval)
-		if err != nil {
-			return fmt.Errorf("解析重调度间隔失败: %v", err)
-		}
-		config.ReschedulingInterval = interval
-		logger.V(2).Info("设置重调度间隔", "interval", interval)
-	}
-
-	// 启用的策略
-	if len(args.EnabledStrategies) > 0 {
-		config.EnabledStrategies = args.EnabledStrategies
-		logger.V(2).Info("设置启用策略", "strategies", args.EnabledStrategies)
-	}
-
 	// CPU阈值
 	if args.CPUThreshold > 0 {
 		if args.CPUThreshold > 100 {
@@ -1004,31 +478,10 @@ func applyPluginConfig(args *ReschedulerArgs, config *ReschedulerConfig, logger 
 		logger.V(2).Info("设置内存阈值", "threshold", args.MemoryThreshold)
 	}
 
-	// 负载不均衡阈值
-	if args.ImbalanceThreshold > 0 {
-		if args.ImbalanceThreshold > 100 {
-			return fmt.Errorf("负载不均衡阈值不能超过100%%: %v", args.ImbalanceThreshold)
-		}
-		config.ImbalanceThreshold = args.ImbalanceThreshold
-		logger.V(2).Info("设置负载不均衡阈值", "threshold", args.ImbalanceThreshold)
-	}
-
-	// 最大重调度Pod数量
-	if args.MaxReschedulePods > 0 {
-		config.MaxReschedulePods = args.MaxReschedulePods
-		logger.V(2).Info("设置最大重调度Pod数量", "max", args.MaxReschedulePods)
-	}
-
 	// 排除的命名空间
 	if len(args.ExcludedNamespaces) > 0 {
 		config.ExcludedNamespaces = args.ExcludedNamespaces
 		logger.V(2).Info("设置排除命名空间", "namespaces", args.ExcludedNamespaces)
-	}
-
-	// 排除的Pod标签选择器
-	if args.ExcludedPodSelector != "" {
-		config.ExcludedPodSelector = args.ExcludedPodSelector
-		logger.V(2).Info("设置排除Pod标签选择器", "selector", args.ExcludedPodSelector)
 	}
 
 	// 调度优化开关（正确处理bool指针值）
@@ -1073,43 +526,12 @@ func applyPluginConfig(args *ReschedulerArgs, config *ReschedulerConfig, logger 
 
 // validateConfig 验证配置的合理性
 func validateConfig(config *ReschedulerConfig, logger klog.Logger) error {
-	// 验证重调度间隔
-	if config.ReschedulingInterval < time.Second {
-		return fmt.Errorf("重调度间隔过小，最小值为1秒，当前值: %v", config.ReschedulingInterval)
-	}
-	if config.ReschedulingInterval > 10*time.Minute {
-		logger.Error(nil, "警告：重调度间隔过长，可能影响响应性", "interval", config.ReschedulingInterval)
-	}
-
-	// 验证策略
-	validStrategies := map[string]bool{
-		LoadBalancingStrategy:        true,
-		ResourceOptimizationStrategy: true,
-		NodeMaintenanceStrategy:      true,
-	}
-	for _, strategy := range config.EnabledStrategies {
-		if !validStrategies[strategy] {
-			return fmt.Errorf("无效的重调度策略: %s", strategy)
-		}
-	}
-
 	// 验证阈值范围
 	if config.CPUThreshold <= 0 || config.CPUThreshold > 100 {
 		return fmt.Errorf("CPU阈值必须在0-100之间: %v", config.CPUThreshold)
 	}
 	if config.MemoryThreshold <= 0 || config.MemoryThreshold > 100 {
 		return fmt.Errorf("内存阈值必须在0-100之间: %v", config.MemoryThreshold)
-	}
-	if config.ImbalanceThreshold <= 0 || config.ImbalanceThreshold > 100 {
-		return fmt.Errorf("负载不均衡阈值必须在0-100之间: %v", config.ImbalanceThreshold)
-	}
-
-	// 验证MaxReschedulePods
-	if config.MaxReschedulePods <= 0 {
-		return fmt.Errorf("最大重调度Pod数量必须大于0: %v", config.MaxReschedulePods)
-	}
-	if config.MaxReschedulePods > 100 {
-		logger.Error(nil, "警告：最大重调度Pod数量过大，可能影响集群稳定性", "max", config.MaxReschedulePods)
 	}
 
 	// 验证权重
@@ -1158,19 +580,9 @@ func validateConfig(config *ReschedulerConfig, logger klog.Logger) error {
 
 // formatConfigSummary 格式化配置摘要用于日志
 func formatConfigSummary(config *ReschedulerConfig) string {
-	return fmt.Sprintf("interval=%v, strategies=%v, cpuThreshold=%.1f%%, memoryThreshold=%.1f%%, schedulingOpt=%v, preventive=%v",
-		config.ReschedulingInterval,
-		config.EnabledStrategies,
+	return fmt.Sprintf("cpuThreshold=%.1f%%, memoryThreshold=%.1f%%, schedulingOpt=%v, preventive=%v",
 		config.CPUThreshold,
 		config.MemoryThreshold,
 		config.EnableSchedulingOptimization,
 		config.EnablePreventiveRescheduling)
-}
-
-// Stop 停止重调度器
-func (r *Rescheduler) Stop() {
-	if r.controller != nil {
-		r.controller.Stop()
-	}
-	close(r.stopCh)
 }
