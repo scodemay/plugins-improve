@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: monitoring
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+    scrape_configs:
+      # 原有的rescheduler指标 (保持兼容性)
+      - job_name: 'rescheduler-metrics'
+        static_configs:
+          - targets: ['rescheduler-metrics-service:8080']
+        scrape_interval: 10s
+        
+      # 增强的rescheduler指标 (新增)
+      - job_name: 'enhanced-rescheduler-metrics'
+        static_configs:
+          - targets: ['enhanced-rescheduler-metrics-service:8080']
+        scrape_interval: 15s
+        metrics_path: /metrics

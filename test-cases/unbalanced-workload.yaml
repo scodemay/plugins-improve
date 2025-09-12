@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: concentrated-load
+  namespace: perf-test
+spec:
+  replicas: 15
+  selector:
+    matchLabels:
+      app: concentrated-load
+  template:
+    metadata:
+      labels:
+        app: concentrated-load
+    spec:
+      schedulerName: rescheduler-scheduler
+      nodeSelector:
+        kubernetes.io/hostname: scheduler-stable-worker  # 强制调度到一个节点
+      containers:
+      - name: app
+        image: nginx:alpine
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi
+---
+apiVersion: apps/v1  
+kind: Deployment
+metadata:
+  name: normal-load
+  namespace: perf-test
+spec:
+  replicas: 8
+  selector:
+    matchLabels:
+      app: normal-load
+  template:
+    metadata:
+      labels:
+        app: normal-load
+    spec:
+      schedulerName: rescheduler-scheduler
+      containers:
+      - name: app
+        image: nginx:alpine
+        resources:
+          requests:
+            cpu: 30m
+            memory: 32Mi
+          limits:
+            cpu: 60m
+            memory: 64Mi
+
+
+

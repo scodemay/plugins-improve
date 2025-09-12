@@ -1,0 +1,105 @@
+# 高并发调度测试
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: concurrent-scheduling-test
+  namespace: perf-test
+spec:
+  parallelism: 50
+  completions: 100
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: concurrent-test
+        test-type: scheduling-performance
+    spec:
+      schedulerName: rescheduler-scheduler
+      containers:
+      - name: concurrent-task
+        image: busybox:latest
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "=== 并发调度测试开始 ==="
+          echo "Pod: $HOSTNAME"
+          echo "节点: $(cat /etc/hostname 2>/dev/null || echo 'unknown')"
+          echo "开始时间: $(date)"
+          
+          # 模拟工作负载
+          start_time=$(date +%s)
+          for i in $(seq 1 30); do
+            # CPU 密集型任务
+            echo $RANDOM | md5sum > /dev/null
+            # 内存使用
+            dd if=/dev/zero of=/tmp/test$i bs=1M count=1 2>/dev/null
+          done
+          end_time=$(date +%s)
+          
+          echo "完成时间: $(date)"
+          echo "执行耗时: $((end_time - start_time)) 秒"
+          echo "=== 并发调度测试完成 ==="
+          
+          # 清理临时文件
+          rm -f /tmp/test*
+        resources:
+          requests:
+            cpu: 100m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+      restartPolicy: Never
+---
+# 持续运行的并发测试 Pod
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: concurrent-long-running
+  namespace: perf-test
+spec:
+  replicas: 30
+  selector:
+    matchLabels:
+      app: concurrent-long-running
+  template:
+    metadata:
+      labels:
+        app: concurrent-long-running
+        test-type: long-running
+    spec:
+      schedulerName: rescheduler-scheduler
+      containers:
+      - name: long-runner
+        image: busybox:latest
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "长期运行测试开始: $(date)"
+          counter=0
+          while true; do
+            counter=$((counter + 1))
+            echo "$(date): 循环 $counter - 节点: $(hostname)"
+            
+            # 周期性负载
+            if [ $((counter % 10)) -eq 0 ]; then
+              echo "执行密集计算..."
+              for i in $(seq 1 20); do
+                echo $RANDOM | md5sum > /dev/null
+              done
+            fi
+            
+            sleep 15
+          done
+        resources:
+          requests:
+            cpu: 50m
+            memory: 32Mi
+          limits:
+            cpu: 150m
+            memory: 96Mi
+      restartPolicy: Always
+
+
+
+

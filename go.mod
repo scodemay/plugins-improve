@@ -12,8 +12,6 @@ require (
 	github.com/go-logr/logr v1.4.2
 	github.com/google/go-cmp v0.7.0
 	github.com/k8stopologyawareschedwg/noderesourcetopology-api v0.1.2
-	github.com/k8stopologyawareschedwg/podfingerprint v0.2.2
-	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/paypal/load-watcher v0.2.4
 	github.com/spf13/pflag v1.0.6
 	github.com/stretchr/testify v1.10.0
@@ -35,6 +33,8 @@ require (
 	sigs.k8s.io/structured-merge-diff/v4 v4.6.0
 	sigs.k8s.io/yaml v1.4.0
 )
+
+require github.com/k8stopologyawareschedwg/podfingerprint v0.2.2 // indirect
 
 require (
 	cel.dev/expr v0.19.1 // indirect
@@ -85,7 +85,7 @@ require (
 	github.com/opencontainers/runtime-spec v1.2.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
-	github.com/prometheus/client_golang v1.22.0 // indirect
+	github.com/prometheus/client_golang v1.22.0
 	github.com/prometheus/client_model v0.6.1 // indirect
 	github.com/prometheus/common v0.62.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
@@ -139,7 +139,7 @@ require (
 	k8s.io/kms v0.33.3 // indirect
 	k8s.io/kube-openapi v0.0.0-20250318190949-c8a335a9a2ff // indirect
 	k8s.io/kubelet v0.33.3 // indirect
-	k8s.io/metrics v0.33.3 
+	k8s.io/metrics v0.33.3
 	sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.31.2 // indirect
 	sigs.k8s.io/json v0.0.0-20241010143419-9aa6b5e7a4b3 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
@@ -184,3 +184,6 @@ replace k8s.io/externaljwt => k8s.io/externaljwt v0.33.3
 replace k8s.io/sample-cli-plugin => k8s.io/sample-cli-plugin v0.33.3
 
 replace k8s.io/sample-controller => k8s.io/sample-controller v0.33.3
+
+replace sigs.k8s.io/scheduler-plugins/test/util => ./test/util
+replace sigs.k8s.io/scheduler-plugins/test/integration => ./test/integration

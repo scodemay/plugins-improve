@@ -1,0 +1,146 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: enhanced-metrics-script
+  namespace: monitoring
+data:
+  collect-enhanced-metrics.sh: |
+    #!/bin/sh
+    while true; do
+      echo "# Enhanced rescheduler metrics with node type separation" > /tmp/metrics.prom
+      echo "# HELP rescheduler_node_pods_count Pods per node with node type labels" >> /tmp/metrics.prom
+      echo "# TYPE rescheduler_node_pods_count gauge" >> /tmp/metrics.prom
+      
+      # 临时文件用于存储节点数据
+      TEMP_FILE="/tmp/node_data.tmp"
+      
+      # 获取Pod分布并分类节点类型（包括所有命名空间）
+      kubectl get pods --all-namespaces -o wide --no-headers 2>/dev/null | \
+      awk '$4=="Running" && NF>=8 && length($8)>5 && $8!="<none>" {print $8}' | \
+      grep "scheduler-stable" | sort | uniq -c > $TEMP_FILE
+      
+      # 初始化计数器
+      worker_total=0
+      worker_count=0
+      control_total=0
+      control_count=0
+      
+      # 处理每个节点的数据
+      while read count node; do
+        if echo "$node" | grep -q "control-plane"; then
+          # Control-plane节点
+          echo "rescheduler_node_pods_count{node_name=\"$node\",node_type=\"control-plane\",role=\"master\"} $count" >> /tmp/metrics.prom
+          control_total=$((control_total + count))
+          control_count=$((control_count + 1))
+        elif echo "$node" | grep -q "worker"; then
+          # Worker节点
+          echo "rescheduler_node_pods_count{node_name=\"$node\",node_type=\"worker\",role=\"worker\"} $count" >> /tmp/metrics.prom
+          worker_total=$((worker_total + count))
+          worker_count=$((worker_count + 1))
+        else
+          # 其他节点
+          echo "rescheduler_node_pods_count{node_name=\"$node\",node_type=\"other\",role=\"unknown\"} $count" >> /tmp/metrics.prom
+        fi
+      done < $TEMP_FILE
+      
+      # 添加汇总指标
+      echo "" >> /tmp/metrics.prom
+      echo "# HELP rescheduler_worker_nodes_total Total worker nodes" >> /tmp/metrics.prom
+      echo "# TYPE rescheduler_worker_nodes_total gauge" >> /tmp/metrics.prom
+      echo "rescheduler_worker_nodes_total $worker_count" >> /tmp/metrics.prom
+      
+      echo "# HELP rescheduler_worker_pods_total Total pods on worker nodes" >> /tmp/metrics.prom
+      echo "# TYPE rescheduler_worker_pods_total gauge" >> /tmp/metrics.prom
+      echo "rescheduler_worker_pods_total $worker_total" >> /tmp/metrics.prom
+      
+      echo "# HELP rescheduler_control_plane_pods_total Total pods on control-plane nodes" >> /tmp/metrics.prom
+      echo "# TYPE rescheduler_control_plane_pods_total gauge" >> /tmp/metrics.prom
+      echo "rescheduler_control_plane_pods_total $control_total" >> /tmp/metrics.prom
+      
+      # 计算worker节点平均Pod数 (避免除零错误)
+      if [ $worker_count -gt 0 ]; then
+        worker_avg=$(echo "scale=2; $worker_total / $worker_count" | bc 2>/dev/null || echo "0")
+        echo "# HELP rescheduler_worker_pods_avg Average pods per worker node" >> /tmp/metrics.prom
+        echo "# TYPE rescheduler_worker_pods_avg gauge" >> /tmp/metrics.prom
+        echo "rescheduler_worker_pods_avg $worker_avg" >> /tmp/metrics.prom
+      fi
+      
+      # 清理临时文件
+      rm -f $TEMP_FILE
+      
+      echo "$(date): Updated enhanced metrics - Workers: $worker_count nodes, $worker_total pods; Control-plane: $control_count nodes, $control_total pods"
+      sleep 15
+    done &
+
+    # HTTP服务器
+    while true; do
+      { 
+        echo -e "HTTP/1.1 200 OK\r"
+        echo -e "Content-Type: text/plain\r"
+        echo -e "\r"
+        cat /tmp/metrics.prom 2>/dev/null || echo "# Enhanced metrics not ready"
+      } | nc -l -p 8080 2>/dev/null || sleep 1
+    done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: enhanced-metrics-collector
+  namespace: monitoring
+  labels:
+    app: enhanced-metrics-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: enhanced-metrics-collector
+  template:
+    metadata:
+      labels:
+        app: enhanced-metrics-collector
+    spec:
+      serviceAccountName: metrics-collector
+      containers:
+      - name: enhanced-metrics-collector
+        image: alpine/k8s:1.28.0
+        command: ["/bin/sh"]
+        args: ["/scripts/collect-enhanced-metrics.sh"]
+        ports:
+        - containerPort: 8080
+          name: metrics
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+        env:
+        - name: KUBERNETES_SERVICE_HOST
+          value: "kubernetes.default.svc.cluster.local"
+        - name: KUBERNETES_SERVICE_PORT
+          value: "443"
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+      volumes:
+      - name: scripts
+        configMap:
+          name: enhanced-metrics-script
+          defaultMode: 0755
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: enhanced-rescheduler-metrics-service
+  namespace: monitoring
+  labels:
+    app: enhanced-metrics-collector
+spec:
+  selector:
+    app: enhanced-metrics-collector
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: metrics
+  type: ClusterIP

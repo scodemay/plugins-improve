@@ -1,0 +1,120 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rescheduler-scheduler
+  namespace: kube-system
+  labels:
+    app: rescheduler-scheduler
+    component: scheduler
+    version: latest
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rescheduler-scheduler
+      component: scheduler
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: rescheduler-scheduler
+        component: scheduler
+        version: latest
+      annotations:
+        config.hash/rescheduler: "{{ config_hash }}"
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "10259"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: rescheduler-scheduler
+      priorityClassName: rescheduler-priority
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        operator: Equal
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/control-plane
+        operator: Equal
+        effect: NoSchedule
+      - key: node.kubernetes.io/not-ready
+        operator: Exists
+        effect: NoExecute
+        tolerationSeconds: 30
+      - key: node.kubernetes.io/unreachable
+        operator: Exists
+        effect: NoExecute
+        tolerationSeconds: 30
+      containers:
+      - name: kube-scheduler
+        image: scheduler-plugins:latest
+        imagePullPolicy: Never
+        command:
+        - /bin/kube-scheduler
+        args:
+        - --config=/etc/kubernetes/config.yaml
+        - --v=2
+        - --leader-elect=true
+        - --leader-elect-resource-name=rescheduler-scheduler-unique
+        - --leader-elect-resource-namespace=kube-system
+        - --leader-elect-lease-duration=30s
+        - --profiling=false
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 10259
+            scheme: HTTPS
+          initialDelaySeconds: 30
+          timeoutSeconds: 5
+          periodSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 10259
+            scheme: HTTPS
+          initialDelaySeconds: 10
+          timeoutSeconds: 3
+          periodSeconds: 5
+          failureThreshold: 3
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+        volumeMounts:
+        - name: config
+          mountPath: /etc/kubernetes
+          readOnly: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      volumes:
+      - name: config
+        configMap:
+          name: rescheduler-config
+          defaultMode: 0o444

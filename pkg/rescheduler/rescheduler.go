@@ -232,8 +232,6 @@ func (rc *ResourceCalculator) CalculateNodeScoreFromMetrics(cpuPercent, memoryPe
 	return rc.CalculateScore(usage)
 }
 
-// ============================= 资源预留管理器 =============================
-
 // ReservationInfo 资源预留信息
 type ReservationInfo struct {
 	PodKey         string // pod的唯一标识，格式为 "namespace/name"
@@ -331,8 +329,6 @@ func New(ctx context.Context, obj runtime.Object, h framework.Handle) (framework
 	return rescheduler, nil
 }
 
-// ============================= 调度器插件接口实现 =============================
-
 // Reserve 实现ReservePlugin接口 - 资源预留机制
 func (r *Rescheduler) Reserve(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeName string) *framework.Status {
 	if !r.config.EnableSchedulingOptimization {
@@ -400,8 +396,6 @@ func (r *Rescheduler) Unreserve(ctx context.Context, state *framework.CycleState
 			"reason", "可能已被释放或未曾预留")
 	}
 }
-
-// ============================= 节点分析辅助方法 =============================
 
 // calculateNodeUsages 计算节点资源使用情况
 func (r *Rescheduler) calculateNodeUsages(nodes []*v1.Node, pods []*v1.Pod) map[string]*NodeResourceUsage {
@@ -655,8 +649,6 @@ func (r *Rescheduler) predictNodeUsageAfterPodSchedulingWithReservations(node *v
 	return r.predictNodeUsageAfterPodScheduling(node, newPod, true)
 }
 
-// ============================= 配置解析相关 =============================
-
 // ReschedulerArgs 插件配置参数结构体（支持JSON和YAML）
 type ReschedulerArgs struct {
 	CPUThreshold                 float64  `json:"cpuThreshold,omitempty" yaml:"cpuThreshold,omitempty"`
@@ -906,8 +898,6 @@ func (r *Rescheduler) Stop() {
 		r.controller.Stop()
 	}
 }
-
-// =========================== ReservationManager 方法 ===========================
 
 // Reserve 预留资源
 func (rm *ReservationManager) Reserve(podKey, nodeName string, cpuReserved, memoryReserved int64) {

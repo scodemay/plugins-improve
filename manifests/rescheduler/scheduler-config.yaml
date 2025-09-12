@@ -1,0 +1,27 @@
+apiVersion: kubescheduler.config.k8s.io/v1
+kind: KubeSchedulerConfiguration
+profiles:
+- schedulerName: rescheduler-scheduler
+  plugins:
+    score:
+      enabled:
+      - name: Rescheduler
+  pluginConfig:
+  - name: Rescheduler
+    args:
+      cpuThreshold: 75.0
+      memoryThreshold: 80.0
+      excludedNamespaces:
+      - kube-system
+      - kube-public
+      enableSchedulingOptimization: true
+      enablePreventiveRescheduling: true
+      cpuScoreWeight: 0.7
+      memoryScoreWeight: 0.3
+      loadBalanceBonus: 15.0
+      enableReschedulingController: true
+      reschedulingInterval: "30s"
+leaderElection:
+  leaderElect: true
+  resourceName: rescheduler-scheduler-unique
+  resourceNamespace: kube-system

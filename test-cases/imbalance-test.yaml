@@ -1,0 +1,166 @@
+# 节点负载不均衡测试
+# 通过创建不同资源需求的 Pod 来模拟负载不均衡场景
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: high-cpu-load
+  namespace: perf-test
+  labels:
+    test-scenario: imbalance
+spec:
+  replicas: 8
+  selector:
+    matchLabels:
+      app: high-cpu-load
+  template:
+    metadata:
+      labels:
+        app: high-cpu-load
+        load-type: cpu-intensive
+    spec:
+      schedulerName: rescheduler-scheduler
+      # 尝试调度到第一个可用节点（可能造成不均衡）
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: Exists
+      containers:
+      - name: cpu-burner
+        image: busybox:latest
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "=== 高CPU负载测试开始 ==="
+          echo "Pod: $HOSTNAME"
+          echo "开始时间: $(date)"
+          
+          # 持续的 CPU 密集型任务
+          while true; do
+            # 高强度 CPU 计算
+            for i in $(seq 1 100); do
+              echo "$RANDOM$(date +%N)" | md5sum | cut -d' ' -f1
+            done
+            
+            # 短暂休息
+            sleep 2
+          done
+        resources:
+          requests:
+            cpu: 200m
+            memory: 64Mi
+          limits:
+            cpu: 400m
+            memory: 128Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: high-memory-load
+  namespace: perf-test
+  labels:
+    test-scenario: imbalance
+spec:
+  replicas: 6
+  selector:
+    matchLabels:
+      app: high-memory-load
+  template:
+    metadata:
+      labels:
+        app: high-memory-load
+        load-type: memory-intensive
+    spec:
+      schedulerName: rescheduler-scheduler
+      containers:
+      - name: memory-consumer
+        image: busybox:latest
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "=== 高内存负载测试开始 ==="
+          echo "Pod: $HOSTNAME"
+          echo "开始时间: $(date)"
+          
+          # 逐步分配内存
+          mkdir -p /tmp/memory-test
+          counter=0
+          
+          while true; do
+            counter=$((counter + 1))
+            
+            # 创建内存文件（模拟内存使用）
+            dd if=/dev/zero of=/tmp/memory-test/block$counter bs=1M count=10 2>/dev/null
+            
+            echo "$(date): 已分配内存块 $counter (10MB)"
+            
+            # 保持一段时间后清理部分内存
+            if [ $counter -gt 8 ]; then
+              rm -f /tmp/memory-test/block$((counter-8))
+            fi
+            
+            sleep 5
+          done
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 100m
+            memory: 256Mi
+---
+# 轻负载 Pod（用于对比）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: light-load
+  namespace: perf-test
+  labels:
+    test-scenario: imbalance
+spec:
+  replicas: 15
+  selector:
+    matchLabels:
+      app: light-load
+  template:
+    metadata:
+      labels:
+        app: light-load
+        load-type: light
+    spec:
+      schedulerName: rescheduler-scheduler
+      containers:
+      - name: light-worker
+        image: busybox:latest
+        command: ["sh", "-c"]
+        args:
+        - |
+          echo "=== 轻负载测试开始 ==="
+          echo "Pod: $HOSTNAME"
+          echo "开始时间: $(date)"
+          
+          while true; do
+            echo "$(date): 轻负载任务运行中..."
+            
+            # 非常轻的计算任务
+            echo "Hello World" > /dev/null
+            date > /dev/null
+            
+            # 长时间休息
+            sleep 30
+          done
+        resources:
+          requests:
+            cpu: 10m
+            memory: 16Mi
+          limits:
+            cpu: 50m
+            memory: 32Mi
+
+
+
+

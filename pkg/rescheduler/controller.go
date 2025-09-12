@@ -32,7 +32,7 @@ const (
 	ReasonNodeMaintenance      = "NodeMaintenance"
 )
 
-// ============================= 重调度控制器 =============================
+
 
 // ReschedulingController 重调度控制器
 type ReschedulingController struct {
@@ -392,7 +392,7 @@ func (c *ReschedulingController) analyzeNodeMaintenance(ctx context.Context, met
 	return decisions
 }
 
-// ============================= Pod筛选和迁移工具 =============================
+
 
 // PodFilter Pod筛选器 - 统一Pod筛选逻辑
 type PodFilter struct {
@@ -508,7 +508,7 @@ func (c *ReschedulingController) executeMigration(ctx context.Context, decision 
 	return nil
 }
 
-// ============================= 辅助工具函数 =============================
+
 func (c *ReschedulingController) isExcludedNamespace(namespace string) bool {
 	for _, excluded := range c.config.ExcludedNamespaces {
 		if namespace == excluded {
