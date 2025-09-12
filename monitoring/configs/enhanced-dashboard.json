@@ -1,7 +1,7 @@
 {
   "dashboard": {
     "id": null,
-    "uid": "d5b6ba70-b041-47b0-98ad-09ebc0dc1732",
+    "uid": "e9db4b29-207f-4f2f-a3c1-688ebb8b3179",
     "title": "Rescheduler 增强监控面板",
     "description": "包含方差、负载均衡率、Worker节点分析等全面监控指标",
     "tags": ["kubernetes", "pods", "rescheduler", "enhanced"],
@@ -33,7 +33,7 @@
         "type": "stat",
         "datasource": {
           "type": "prometheus",
-          "uid": "e3d01d7b-502f-4c66-baa7-0ab8b77d0b72"
+          "uid": "e9db4b29-207f-4f2f-a3c1-688ebb8b3179"
         },
         "targets": [
           {
@@ -145,7 +145,7 @@
         "type": "stat",
         "datasource": {
           "type": "prometheus",
-          "uid": "e3d01d7b-502f-4c66-baa7-0ab8b77d0b72"
+          "uid": "e9db4b29-207f-4f2f-a3c1-688ebb8b3179"
         },
         "targets": [
           {
@@ -222,7 +222,7 @@
         "type": "stat",
         "datasource": {
           "type": "prometheus",
-          "uid": "e3d01d7b-502f-4c66-baa7-0ab8b77d0b72"
+          "uid": "e9db4b29-207f-4f2f-a3c1-688ebb8b3179"
         },
         "targets": [
           {
@@ -294,7 +294,7 @@
         "type": "stat",
         "datasource": {
           "type": "prometheus",
-          "uid": "e3d01d7b-502f-4c66-baa7-0ab8b77d0b72"
+          "uid": "e9db4b29-207f-4f2f-a3c1-688ebb8b3179"
         },
         "targets": [
           {
@@ -371,7 +371,7 @@
         "type": "timeseries",
         "datasource": {
           "type": "prometheus",
-          "uid": "e3d01d7b-502f-4c66-baa7-0ab8b77d0b72"
+          "uid": "e9db4b29-207f-4f2f-a3c1-688ebb8b3179"
         },
         "targets": [
           {
@@ -454,7 +454,7 @@
         "type": "timeseries",
         "datasource": {
           "type": "prometheus",
-          "uid": "e3d01d7b-502f-4c66-baa7-0ab8b77d0b72"
+          "uid": "e9db4b29-207f-4f2f-a3c1-688ebb8b3179"
         },
         "targets": [
           {
@@ -574,15 +574,15 @@
       },
       {
         "id": 7,
-        "title": "负载分布热力图",
-        "type": "heatmap",
+        "title": "节点资源分布图",
+        "type": "piechart",
         "datasource": {
           "type": "prometheus",
-          "uid": "e3d01d7b-502f-4c66-baa7-0ab8b77d0b72"
+          "uid": "e9db4b29-207f-4f2f-a3c1-688ebb8b3179"
         },
         "targets": [
           {
-            "expr": "increase(histogram_quantile(0.5, rate(rescheduler_node_pods_count[5m]))) or rescheduler_node_pods_count",
+            "expr": "rescheduler_node_pods_count",
             "legendFormat": "{{node_name}}",
             "refId": "A"
           }
@@ -593,41 +593,48 @@
           "x": 0,
           "y": 24
         },
-        "options": {
-          "calculate": false,
-          "calculation": {},
-          "cellGap": 2,
-          "cellValues": {},
-          "color": {
-            "exponent": 0.5,
-            "fill": "dark-orange",
-            "mode": "spectrum",
-            "reverse": false,
-            "scale": "exponential",
-            "scheme": "Spectral",
-            "steps": 64
-          },
-          "exemplars": {
-            "color": "rgba(255,0,255,0.7)"
-          },
-          "filterValues": {
-            "le": 1e-9
-          },
-          "legend": {
-            "show": false
-          },
-          "rowsFrame": {
-            "layout": "auto"
-          },
-          "tooltip": {
-            "show": true,
-            "yHistogram": false
-          },
-          "yAxis": {
-            "axisPlacement": "left",
-            "reverse": false,
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "palette-classic"
+            },
+            "custom": {
+              "hideFrom": {
+                "legend": false,
+                "tooltip": false,
+                "vis": false
+              }
+            },
+            "mappings": [],
             "unit": "short"
           }
+        },
+        "options": {
+          "reduceOptions": {
+            "values": false,
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": ""
+          },
+          "pieType": "pie",
+          "tooltip": {
+            "mode": "single",
+            "sort": "none"
+          },
+          "legend": {
+            "displayMode": "table",
+            "placement": "right",
+            "showLegend": true,
+            "values": [
+              "value",
+              "percent"
+            ]
+          },
+          "displayLabels": [
+            "name",
+            "value"
+          ]
         }
       },
       {
@@ -636,7 +643,7 @@
         "type": "gauge",
         "datasource": {
           "type": "prometheus",
-          "uid": "e3d01d7b-502f-4c66-baa7-0ab8b77d0b72"
+          "uid": "e9db4b29-207f-4f2f-a3c1-688ebb8b3179"
         },
         "targets": [
           {
@@ -703,7 +710,7 @@
         "type": "table",
         "datasource": {
           "type": "prometheus",
-          "uid": "e3d01d7b-502f-4c66-baa7-0ab8b77d0b72"
+          "uid": "e9db4b29-207f-4f2f-a3c1-688ebb8b3179"
         },
         "targets": [
           {
@@ -839,15 +846,15 @@
       {
         "id": 10,
         "title": "实时监控状态",
-        "type": "logs",
+        "type": "stat",
         "datasource": {
           "type": "prometheus",
-          "uid": "e3d01d7b-502f-4c66-baa7-0ab8b77d0b72"
+          "uid": "e9db4b29-207f-4f2f-a3c1-688ebb8b3179"
         },
         "targets": [
           {
-            "expr": "changes(rescheduler_node_pods_count[5m])",
-            "legendFormat": "{{node_name}} 变化次数",
+            "expr": "rescheduler_node_pods_count",
+            "legendFormat": "{{node_name}} ({{node_type}})",
             "refId": "A"
           }
         ],
@@ -858,14 +865,52 @@
           "y": 40
         },
         "options": {
-          "dedupStrategy": "none",
-          "enableLogDetails": true,
-          "prettifyLogMessage": false,
-          "showCommonLabels": false,
-          "showLabels": false,
-          "showTime": false,
-          "sortOrder": "Descending",
-          "wrapLogMessage": false
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "auto",
+          "orientation": "auto",
+          "reduceOptions": {
+            "values": false,
+            "calcs": [
+              "lastNotNull"
+            ],
+            "fields": ""
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "palette-classic"
+            },
+            "custom": {
+              "hideFrom": {
+                "legend": false,
+                "tooltip": false,
+                "vis": false
+              }
+            },
+            "mappings": [],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "green",
+                  "value": null
+                },
+                {
+                  "color": "yellow",
+                  "value": 1
+                },
+                {
+                  "color": "red",
+                  "value": 3
+                }
+              ]
+            },
+            "unit": "short"
+          },
+          "overrides": []
         }
       }
     ],

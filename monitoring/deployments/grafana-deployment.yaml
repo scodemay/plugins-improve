@@ -23,6 +23,21 @@ data:
     [log]
     mode = console
     level = info
+  
+  datasource.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus-service:9090
+        uid: prometheus-datasource
+        isDefault: true
+        jsonData:
+          timeInterval: "5s"
+          queryTimeout: "60s"
+          httpMethod: "GET"
+        editable: true
 
 ---
 apiVersion: apps/v1
@@ -66,6 +81,8 @@ spec:
           mountPath: /etc/grafana
         - name: grafana-storage
           mountPath: /var/lib/grafana
+        - name: grafana-datasource
+          mountPath: /etc/grafana/provisioning/datasources
         resources:
           requests:
             memory: "256Mi"
@@ -91,6 +108,12 @@ spec:
           name: grafana-config
       - name: grafana-storage
         emptyDir: {}
+      - name: grafana-datasource
+        configMap:
+          name: grafana-config
+          items:
+          - key: datasource.yaml
+            path: datasource.yaml
 
 ---
 apiVersion: v1

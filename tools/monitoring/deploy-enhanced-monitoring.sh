@@ -90,6 +90,65 @@ deploy_grafana() {
     log_success "Grafana部署完成"
 }
 
+# 配置Grafana数据源和导入面板
+configure_grafana() {
+    log_info "配置Grafana数据源和面板..."
+    
+    # 等待Grafana完全启动
+    sleep 10
+    
+    # 启动端口转发
+    kubectl port-forward -n monitoring svc/grafana-service 3000:3000 > /tmp/grafana-port-forward.log 2>&1 &
+    GRAFANA_PID=$!
+    sleep 5
+    
+    # 验证数据源是否自动配置
+    log_info "验证数据源配置..."
+    if curl -s -u "admin:admin123" "http://localhost:3000/api/datasources" | grep -q "prometheus-datasource"; then
+        log_success "Prometheus数据源已自动配置"
+    else
+        log_warning "数据源未自动配置，手动添加..."
+        curl -s -u "admin:admin123" -X POST \
+          -H "Content-Type: application/json" \
+          -d '{
+            "name": "Prometheus",
+            "type": "prometheus",
+            "access": "proxy",
+            "url": "http://prometheus-service:9090",
+            "uid": "prometheus-datasource",
+            "basicAuth": false,
+            "isDefault": true
+          }' \
+          http://localhost:3000/api/datasources > /dev/null
+        log_success "手动配置数据源完成"
+    fi
+    
+    # 导入面板
+    if [ -f "monitoring/configs/enhanced-dashboard.json" ]; then
+        log_info "导入监控面板..."
+        
+        # 更新面板中的数据源UID
+        sed -i 's/"uid": "[^"]*"/"uid": "prometheus-datasource"/g' monitoring/configs/enhanced-dashboard.json
+        
+        IMPORT_RESULT=$(curl -s -u "admin:admin123" \
+          -H "Content-Type: application/json" \
+          -X POST \
+          -d @monitoring/configs/enhanced-dashboard.json \
+          http://localhost:3000/api/dashboards/import)
+        
+        if echo "$IMPORT_RESULT" | grep -q "imported"; then
+            log_success "监控面板导入成功"
+        else
+            log_warning "面板导入可能有问题，请手动检查"
+        fi
+    else
+        log_warning "未找到监控面板配置文件"
+    fi
+    
+    # 停止端口转发
+    kill $GRAFANA_PID 2>/dev/null || true
+}
+
 # 部署增强的指标收集器
 deploy_enhanced_collector() {
     log_info "部署增强的指标收集器..."
@@ -201,6 +260,7 @@ main() {
     deploy_prometheus
     deploy_grafana
     deploy_enhanced_collector
+    configure_grafana
     verify_deployment
     generate_access_info
     
