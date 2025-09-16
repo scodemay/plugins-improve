@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kubernetes调度器插件管理器</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+
+        .header h1 {
+            color: #2c3e50;
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            color: #7f8c8d;
+            font-size: 1.1em;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+            transition: transform 0.3s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+        }
+
+        .card h2 {
+            color: #2c3e50;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 10px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #2c3e50;
+        }
+
+        .form-group select,
+        .form-group input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e1e8ed;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s ease;
+        }
+
+        .form-group select:focus,
+        .form-group input:focus {
+            outline: none;
+            border-color: #3498db;
+        }
+
+        .checkbox-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .checkbox-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .checkbox-item input[type="checkbox"] {
+            width: auto;
+            margin: 0;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #3498db, #2980b9);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(52, 152, 219, 0.4);
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #e74c3c, #c0392b);
+        }
+
+        .btn-danger:hover {
+            box-shadow: 0 5px 15px rgba(231, 76, 60, 0.4);
+        }
+
+        .btn-success {
+            background: linear-gradient(135deg, #27ae60, #229954);
+        }
+
+        .btn-success:hover {
+            box-shadow: 0 5px 15px rgba(39, 174, 96, 0.4);
+        }
+
+        .btn-warning {
+            background: linear-gradient(135deg, #f39c12, #e67e22);
+        }
+
+        .btn-warning:hover {
+            box-shadow: 0 5px 15px rgba(243, 156, 18, 0.4);
+        }
+
+        .status-panel {
+            grid-column: 1 / -1;
+        }
+
+        .plugin-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .plugin-item {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+            padding: 15px;
+            transition: all 0.3s ease;
+        }
+
+        .plugin-item:hover {
+            background: #e9ecef;
+            transform: translateY(-2px);
+        }
+
+        .plugin-name {
+            font-weight: 600;
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+
+        .plugin-status {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .status-badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .status-enabled {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status-disabled {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .plugin-actions {
+            display: flex;
+            gap: 5px;
+        }
+
+        .plugin-actions .btn {
+            padding: 6px 12px;
+            font-size: 12px;
+            margin: 0;
+        }
+
+        .alert {
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .alert-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .alert-error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .config-section {
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid #e9ecef;
+        }
+
+        .config-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 6px;
+            margin-bottom: 10px;
+        }
+
+        .config-key {
+            font-weight: 600;
+            color: #2c3e50;
+        }
+
+        .config-value {
+            color: #6c757d;
+        }
+
+        .config-input {
+            width: 150px;
+            padding: 6px;
+            border: 1px solid #ced4da;
+            border-radius: 4px;
+        }
+
+        @media (max-width: 768px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+            
+            .plugin-list {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 Kubernetes调度器插件管理器</h1>
+            <p>实时管理调度器插件的启用、禁用和配置</p>
+        </div>
+
+        <div class="alert alert-success" id="successAlert"></div>
+        <div class="alert alert-error" id="errorAlert"></div>
+
+        <div class="main-content">
+            <div class="card">
+                <h2>🔧 插件操作</h2>
+                
+                <div class="form-group">
+                    <label for="pluginSelect">选择插件:</label>
+                    <select id="pluginSelect">
+                        <option value="">请选择插件</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label>插件阶段:</label>
+                    <div class="checkbox-group" id="phaseCheckboxes">
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="phase-filter" value="filter" checked>
+                            <label for="phase-filter">Filter</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="phase-score" value="score" checked>
+                            <label for="phase-score">Score</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="phase-reserve" value="reserve">
+                            <label for="phase-reserve">Reserve</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="phase-prebind" value="preBind">
+                            <label for="phase-prebind">PreBind</label>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="margin-top: 20px;">
+                    <button class="btn btn-success" onclick="enablePlugin()">✅ 启用插件</button>
+                    <button class="btn btn-danger" onclick="disablePlugin()">❌ 禁用插件</button>
+                    <button class="btn btn-warning" onclick="restartScheduler()">🔄 重启调度器</button>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>⚙️ 插件配置</h2>
+                
+                <div class="form-group">
+                    <label for="configPluginSelect">选择插件:</label>
+                    <select id="configPluginSelect">
+                        <option value="">请选择插件</option>
+                    </select>
+                </div>
+
+                <div id="configSection" class="config-section" style="display: none;">
+                    <h3>配置参数</h3>
+                    <div id="configItems"></div>
+                    <button class="btn btn-success" onclick="updatePluginConfig()">💾 保存配置</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="card status-panel">
+            <h2>📊 插件状态</h2>
+            <div class="loading" id="loadingStatus">
+                <div class="spinner"></div>
+                <p>加载中...</p>
+            </div>
+            <div id="pluginStatus" class="plugin-list"></div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8080/api/v1';
+        let currentPlugins = [];
+        let currentStatus = {};
+
+        // 初始化页面
+        document.addEventListener('DOMContentLoaded', function() {
+            loadPluginStatus();
+            loadSupportedPlugins();
+        });
+
+        // 加载支持的插件列表
+        async function loadSupportedPlugins() {
+            try {
+                const response = await fetch(`${API_BASE}/plugins`);
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    currentPlugins = data.supported_plugins;
+                    
+                    // 填充插件选择框
+                    const pluginSelect = document.getElementById('pluginSelect');
+                    const configPluginSelect = document.getElementById('configPluginSelect');
+                    
+                    currentPlugins.forEach(plugin => {
+                        const option1 = document.createElement('option');
+                        option1.value = plugin;
+                        option1.textContent = plugin;
+                        pluginSelect.appendChild(option1);
+                        
+                        const option2 = document.createElement('option');
+                        option2.value = plugin;
+                        option2.textContent = plugin;
+                        configPluginSelect.appendChild(option2);
+                    });
+                }
+            } catch (error) {
+                showError('加载插件列表失败: ' + error.message);
+            }
+        }
+
+        // 加载插件状态
+        async function loadPluginStatus() {
+            const loadingDiv = document.getElementById('loadingStatus');
+            const statusDiv = document.getElementById('pluginStatus');
+            
+            loadingDiv.style.display = 'block';
+            statusDiv.innerHTML = '';
+            
+            try {
+                const response = await fetch(`${API_BASE}/plugins`);
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    currentStatus = data.data;
+                    renderPluginStatus(data.data);
+                } else {
+                    showError('加载插件状态失败: ' + data.message);
+                }
+            } catch (error) {
+                showError('加载插件状态失败: ' + error.message);
+            } finally {
+                loadingDiv.style.display = 'none';
+            }
+        }
+
+        // 渲染插件状态
+        function renderPluginStatus(status) {
+            const statusDiv = document.getElementById('pluginStatus');
+            statusDiv.innerHTML = '';
+
+            // 渲染启用的插件
+            Object.keys(status.enabled_plugins || {}).forEach(phase => {
+                const plugins = status.enabled_plugins[phase];
+                plugins.forEach(plugin => {
+                    const pluginDiv = createPluginItem(plugin, phase, 'enabled');
+                    statusDiv.appendChild(pluginDiv);
+                });
+            });
+
+            // 渲染禁用的插件
+            Object.keys(status.disabled_plugins || {}).forEach(phase => {
+                const plugins = status.disabled_plugins[phase];
+                plugins.forEach(plugin => {
+                    const pluginDiv = createPluginItem(plugin, phase, 'disabled');
+                    statusDiv.appendChild(pluginDiv);
+                });
+            });
+        }
+
+        // 创建插件项
+        function createPluginItem(plugin, phase, status) {
+            const div = document.createElement('div');
+            div.className = 'plugin-item';
+            
+            const statusClass = status === 'enabled' ? 'status-enabled' : 'status-disabled';
+            const statusText = status === 'enabled' ? '已启用' : '已禁用';
+            
+            div.innerHTML = `
+                <div class="plugin-name">${plugin}</div>
+                <div class="plugin-status">
+                    <span class="status-badge ${statusClass}">${statusText}</span>
+                    <span class="status-badge">${phase}</span>
+                </div>
+                <div class="plugin-actions">
+                    ${status === 'enabled' ? 
+                        `<button class="btn btn-danger" onclick="disablePluginByName('${plugin}', '${phase}')">禁用</button>` :
+                        `<button class="btn btn-success" onclick="enablePluginByName('${plugin}', '${phase}')">启用</button>`
+                    }
+                    <button class="btn" onclick="showPluginConfig('${plugin}')">配置</button>
+                </div>
+            `;
+            
+            return div;
+        }
+
+        // 启用插件
+        async function enablePlugin() {
+            const plugin = document.getElementById('pluginSelect').value;
+            const phases = getSelectedPhases();
+            
+            if (!plugin) {
+                showError('请选择要启用的插件');
+                return;
+            }
+            
+            if (phases.length === 0) {
+                showError('请选择至少一个插件阶段');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE}/plugins/${plugin}/enable`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ phases: phases })
+                });
+                
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    showSuccess(data.message);
+                    loadPluginStatus();
+                } else {
+                    showError(data.message);
+                }
+            } catch (error) {
+                showError('启用插件失败: ' + error.message);
+            }
+        }
+
+        // 禁用插件
+        async function disablePlugin() {
+            const plugin = document.getElementById('pluginSelect').value;
+            const phases = getSelectedPhases();
+            
+            if (!plugin) {
+                showError('请选择要禁用的插件');
+                return;
+            }
+            
+            if (phases.length === 0) {
+                showError('请选择至少一个插件阶段');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE}/plugins/${plugin}/disable`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ phases: phases })
+                });
+                
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    showSuccess(data.message);
+                    loadPluginStatus();
+                } else {
+                    showError(data.message);
+                }
+            } catch (error) {
+                showError('禁用插件失败: ' + error.message);
+            }
+        }
+
+        // 按名称启用插件
+        async function enablePluginByName(plugin, phase) {
+            try {
+                const response = await fetch(`${API_BASE}/plugins/${plugin}/enable`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ phases: [phase] })
+                });
+                
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    showSuccess(data.message);
+                    loadPluginStatus();
+                } else {
+                    showError(data.message);
+                }
+            } catch (error) {
+                showError('启用插件失败: ' + error.message);
+            }
+        }
+
+        // 按名称禁用插件
+        async function disablePluginByName(plugin, phase) {
+            try {
+                const response = await fetch(`${API_BASE}/plugins/${plugin}/disable`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ phases: [phase] })
+                });
+                
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    showSuccess(data.message);
+                    loadPluginStatus();
+                } else {
+                    showError(data.message);
+                }
+            } catch (error) {
+                showError('禁用插件失败: ' + error.message);
+            }
+        }
+
+        // 重启调度器
+        async function restartScheduler() {
+            if (!confirm('确定要重启调度器吗？这可能会影响正在运行的Pod调度。')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE}/scheduler/restart`, {
+                    method: 'POST'
+                });
+                
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    showSuccess(data.message);
+                } else {
+                    showError(data.message);
+                }
+            } catch (error) {
+                showError('重启调度器失败: ' + error.message);
+            }
+        }
+
+        // 显示插件配置
+        function showPluginConfig(plugin) {
+            const configSection = document.getElementById('configSection');
+            const configItems = document.getElementById('configItems');
+            
+            // 选择插件
+            document.getElementById('configPluginSelect').value = plugin;
+            
+            // 显示配置区域
+            configSection.style.display = 'block';
+            
+            // 清空配置项
+            configItems.innerHTML = '';
+            
+            // 添加配置项
+            const configs = currentStatus.plugin_configs[plugin] || {};
+            
+            Object.keys(configs).forEach(key => {
+                const configItem = document.createElement('div');
+                configItem.className = 'config-item';
+                configItem.innerHTML = `
+                    <span class="config-key">${key}:</span>
+                    <input type="text" class="config-input" id="config-${key}" value="${configs[key]}">
+                `;
+                configItems.appendChild(configItem);
+            });
+            
+            // 如果没有配置项，添加一个示例
+            if (Object.keys(configs).length === 0) {
+                const configItem = document.createElement('div');
+                configItem.className = 'config-item';
+                configItem.innerHTML = `
+                    <span class="config-key">示例配置:</span>
+                    <input type="text" class="config-input" id="config-example" placeholder="配置值">
+                `;
+                configItems.appendChild(configItem);
+            }
+        }
+
+        // 更新插件配置
+        async function updatePluginConfig() {
+            const plugin = document.getElementById('configPluginSelect').value;
+            
+            if (!plugin) {
+                showError('请选择要配置的插件');
+                return;
+            }
+            
+            const configs = {};
+            const configInputs = document.querySelectorAll('#configItems .config-input');
+            
+            configInputs.forEach(input => {
+                const key = input.id.replace('config-', '');
+                if (input.value.trim()) {
+                    configs[key] = input.value.trim();
+                }
+            });
+            
+            if (Object.keys(configs).length === 0) {
+                showError('请至少配置一个参数');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE}/plugins/${plugin}/config`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(configs)
+                });
+                
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    showSuccess(data.message);
+                    loadPluginStatus();
+                } else {
+                    showError(data.message);
+                }
+            } catch (error) {
+                showError('更新插件配置失败: ' + error.message);
+            }
+        }
+
+        // 获取选中的阶段
+        function getSelectedPhases() {
+            const checkboxes = document.querySelectorAll('#phaseCheckboxes input[type="checkbox"]:checked');
+            return Array.from(checkboxes).map(cb => cb.value);
+        }
+
+        // 显示成功消息
+        function showSuccess(message) {
+            const alert = document.getElementById('successAlert');
+            alert.textContent = message;
+            alert.style.display = 'block';
+            setTimeout(() => {
+                alert.style.display = 'none';
+            }, 5000);
+        }
+
+        // 显示错误消息
+        function showError(message) {
+            const alert = document.getElementById('errorAlert');
+            alert.textContent = message;
+            alert.style.display = 'block';
+            setTimeout(() => {
+                alert.style.display = 'none';
+            }, 5000);
+        }
+
+        // 定期刷新状态
+        setInterval(loadPluginStatus, 30000); // 每30秒刷新一次
+    </script>
+</body>
+</html>

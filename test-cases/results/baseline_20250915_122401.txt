@@ -1,0 +1,47 @@
+=== 基准指标数据 - 2025年 09月 15日 星期一 12:24:01 CST ===
+
+节点信息:
+NAME                             STATUS   ROLES           AGE     VERSION   INTERNAL-IP   EXTERNAL-IP   OS-IMAGE                         KERNEL-VERSION     CONTAINER-RUNTIME
+scheduler-stable-control-plane   Ready    control-plane   4d21h   v1.31.0   172.18.0.4    <none>        Debian GNU/Linux 12 (bookworm)   6.8.0-78-generic   containerd://1.7.18
+scheduler-stable-worker          Ready    <none>          4d21h   v1.31.0   172.18.0.2    <none>        Debian GNU/Linux 12 (bookworm)   6.8.0-78-generic   containerd://1.7.18
+scheduler-stable-worker2         Ready    <none>          4d21h   v1.31.0   172.18.0.5    <none>        Debian GNU/Linux 12 (bookworm)   6.8.0-78-generic   containerd://1.7.18
+scheduler-stable-worker3         Ready    <none>          4d21h   v1.31.0   172.18.0.3    <none>        Debian GNU/Linux 12 (bookworm)   6.8.0-78-generic   containerd://1.7.18
+
+节点资源使用情况:
+NAME                             CPU(cores)   CPU%   MEMORY(bytes)   MEMORY%   
+scheduler-stable-control-plane   447m         7%     874Mi           11%       
+scheduler-stable-worker          844m         14%    1105Mi          13%       
+scheduler-stable-worker2         791m         13%    1027Mi          12%       
+scheduler-stable-worker3         1084m        18%    1222Mi          15%       
+
+现有Pod分布:
+NAMESPACE            NAME                                                     READY   STATUS              RESTARTS      AGE     IP             NODE                             NOMINATED NODE   READINESS GATES
+load-test-fixed      light-cpu-app-584bfd57c8-2bl2j                           1/1     Running             0             74s     10.244.2.174   scheduler-stable-worker3         <none>           <none>
+load-test-fixed      light-cpu-app-584bfd57c8-2n55c                           1/1     Running             0             75s     10.244.2.164   scheduler-stable-worker3         <none>           <none>
+load-test-fixed      light-cpu-app-584bfd57c8-2qhz4                           1/1     Running             0             73s     10.244.2.189   scheduler-stable-worker3         <none>           <none>
+load-test-fixed      light-cpu-app-584bfd57c8-4bctk                           1/1     Running             0             75s     10.244.3.151   scheduler-stable-worker          <none>           <none>
+load-test-fixed      light-cpu-app-584bfd57c8-594fv                           1/1     Running             0             73s     10.244.1.207   scheduler-stable-worker2         <none>           <none>
+load-test-fixed      light-cpu-app-584bfd57c8-5n68q                           1/1     Running             0             75s     10.244.1.184   scheduler-stable-worker2         <none>           <none>
+load-test-fixed      light-cpu-app-584bfd57c8-5sbqf                           1/1     Running             0             75s     10.244.3.161   scheduler-stable-worker          <none>           <none>
+load-test-fixed      light-cpu-app-584bfd57c8-5zlzf                           1/1     Running             0             73s     10.244.2.180   scheduler-stable-worker3         <none>           <none>
+load-test-fixed      light-cpu-app-584bfd57c8-6jc2j                           1/1     Running             0             73s     10.244.3.171   scheduler-stable-worker          <none>           <none>
+load-test-fixed      light-cpu-app-584bfd57c8-6mtr9                           1/1     Running             0             75s     10.244.1.182   scheduler-stable-worker2         <none>           <none>
+load-test-fixed      light-cpu-app-584bfd57c8-74x5z                           1/1     Running             0             75s     10.244.2.166   scheduler-stable-worker3         <none>           <none>
+load-test-fixed      light-cpu-app-584bfd57c8-77z49                           1/1     Running             0             75s     10.244.2.170   scheduler-stable-worker3         <none>           <none>
+load-test-fixed      light-cpu-app-584bfd57c8-7cwp5                           1/1     Running             0             75s     10.244.2.167   scheduler-stable-worker3         <none>           <none>
+load-test-fixed      light-cpu-app-584bfd57c8-7kthz                           1/1     Running             0             73s     10.244.3.174   scheduler-stable-worker          <none>           <none>
+load-test-fixed      light-cpu-app-584bfd57c8-7n2vd                           1/1     Running             0             75s     10.244.1.180   scheduler-stable-worker2         <none>           <none>
+load-test-fixed      light-cpu-app-584bfd57c8-7nj7l                           1/1     Running             0             75s     10.244.1.189   scheduler-stable-worker2         <none>           <none>
+load-test-fixed      light-cpu-app-584bfd57c8-8jgf7                           1/1     Running             0             73s     10.244.1.197   scheduler-stable-worker2         <none>           <none>
+load-test-fixed      light-cpu-app-584bfd57c8-92cb6                           1/1     Running             0             74s     10.244.2.177   scheduler-stable-worker3         <none>           <none>
+load-test-fixed      light-cpu-app-584bfd57c8-9cvg9                           1/1     Running             0             73s     10.244.2.187   scheduler-stable-worker3         <none>           <none>
+
+调度器状态:
+etcd-scheduler-stable-control-plane                      1/1     Running   0             23m
+kube-apiserver-scheduler-stable-control-plane            1/1     Running   0             23m
+kube-controller-manager-scheduler-stable-control-plane   1/1     Running   8 (22m ago)   4d21h
+kube-scheduler-scheduler-stable-control-plane            1/1     Running   8 (22m ago)   4d21h
+rescheduler-scheduler-c5959b854-98thk                    1/1     Running   9 (17m ago)   2d19h
+
+Rescheduler状态:
+kube-system          rescheduler-scheduler-c5959b854-98thk                    1/1     Running             9 (17m ago)   2d19h

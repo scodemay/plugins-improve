@@ -1,0 +1,224 @@
+# 优化的大规模Pod调度测试用例 - 资源高效版
+# 基于实际使用情况优化资源配置，提高集群资源利用率
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: load-test
+  labels:
+    test-type: "scheduler-load-test-optimized"
+    pod-count: "350"
+    efficiency: "high"
+
+---
+# 测试应用1: 空闲应用 (80 pods) - 模拟低资源使用的应用
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: idle-app
+  namespace: load-test
+  labels:
+    app: idle-app
+    test-group: "idle"
+spec:
+  replicas: 150
+  selector:
+    matchLabels:
+      app: idle-app
+  template:
+    metadata:
+      labels:
+        app: idle-app
+        test-group: "idle"
+        workload-type: "idle"
+    spec:
+      containers:
+      - name: idle-container
+        image: nginx:1.20-alpine
+        command: ["/bin/sh"]
+        args: ["-c", "while true; do echo 'idle task'; sleep 30; done"]
+        resources:
+          requests:
+            cpu: "2m"      # 降低到接近实际使用量
+            memory: "8Mi"   # 降低到接近实际使用量
+          limits:
+            cpu: "10m"
+            memory: "16Mi"
+
+---
+# 测试应用2: CPU密集型应用 (60 pods) - 真实的CPU负载
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cpu-intensive-app
+  namespace: load-test
+  labels:
+    app: cpu-intensive
+    test-group: "cpu-intensive"
+spec:
+  replicas: 100
+  selector:
+    matchLabels:
+      app: cpu-intensive
+  template:
+    metadata:
+      labels:
+        app: cpu-intensive
+        test-group: "cpu-intensive"
+        workload-type: "cpu-intensive"
+    spec:
+      containers:
+      - name: cpu-worker
+        image: nginx:1.20-alpine
+        command: ["/bin/sh"]
+        args: ["-c", "while true; do dd if=/dev/zero of=/dev/null bs=1M count=100; sleep 2; done"]  # 使用dd产生CPU负载
+        resources:
+          requests:
+            cpu: "20m"      # 更高的CPU请求以匹配实际使用
+            memory: "16Mi"
+          limits:
+            cpu: "100m"     # 允许突发到100m
+            memory: "32Mi"
+
+---
+# 测试应用3: Web服务应用 (100 pods)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-service-app
+  namespace: load-test
+  labels:
+    app: web-service
+    test-group: "web-service"
+spec:
+  replicas: 100
+  selector:
+    matchLabels:
+      app: web-service
+  template:
+    metadata:
+      labels:
+        app: web-service
+        test-group: "web-service"
+        workload-type: "web"
+    spec:
+      containers:
+      - name: web-server
+        image: nginx:1.20-alpine
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            cpu: "5m"       # 降低到nginx实际使用量
+            memory: "16Mi"  # 降低到nginx实际使用量
+          limits:
+            cpu: "20m"      # 合理的限制
+            memory: "32Mi"
+
+---
+# 测试应用4: 内存密集型应用 (40 pods) - 真实的内存负载
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memory-intensive-app
+  namespace: load-test
+  labels:
+    app: memory-intensive
+    test-group: "memory-intensive"
+spec:
+  replicas: 50
+  selector:
+    matchLabels:
+      app: memory-intensive
+  template:
+    metadata:
+      labels:
+        app: memory-intensive
+        test-group: "memory-intensive"
+        workload-type: "memory-intensive"
+    spec:
+      containers:
+      - name: memory-worker
+        image: nginx:1.20-alpine
+        command: ["/bin/sh"]
+        args: ["-c", "while true; do echo 'Allocating memory...'; dd if=/dev/zero of=/tmp/memory_load bs=1M count=50; sleep 10; rm -f /tmp/memory_load; done"]  # 使用dd产生内存负载
+        resources:
+          requests:
+            cpu: "10m"
+            memory: "80Mi"    # 更高的内存请求以匹配实际使用
+          limits:
+            cpu: "30m"
+            memory: "128Mi"   # 允许内存突发
+
+---
+# 测试应用5: 混合负载应用 (70 pods) - CPU和内存混合负载
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mixed-load-app
+  namespace: load-test
+  labels:
+    app: mixed-load
+    test-group: "mixed-load"
+spec:
+  replicas: 70
+  selector:
+    matchLabels:
+      app: mixed-load
+  template:
+    metadata:
+      labels:
+        app: mixed-load
+        test-group: "mixed-load"
+        workload-type: "mixed"
+    spec:
+      containers:
+      - name: mixed-worker
+        image: nginx:1.20-alpine
+        command: ["/bin/sh"]
+        args: ["-c", "while true; do dd if=/dev/zero of=/dev/null bs=1M count=50 & dd if=/dev/zero of=/tmp/mem_load bs=1M count=20; sleep 5; rm -f /tmp/mem_load; wait; done"]  # CPU和内存混合负载
+        resources:
+          requests:
+            cpu: "30m"
+            memory: "48Mi"
+          limits:
+            cpu: "60m"
+            memory: "80Mi"
+
+---
+# 测试资源配额限制 - 基于优化后的配置
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: load-test-optimized-quota
+  namespace: load-test
+spec:
+  hard:
+    requests.cpu: "8"       # 降低CPU配额以匹配实际需求
+    requests.memory: "12Gi" # 降低内存配额
+    limits.cpu: "16"        # 合理的CPU限制
+    limits.memory: "20Gi"   # 合理的内存限制
+    pods: "400"             # 调整Pod数量限制
+
+---
+# 限制范围 - 确保资源配置的一致性
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: load-test-limits
+  namespace: load-test
+spec:
+  limits:
+  - default:
+      cpu: "20m"
+      memory: "32Mi"
+    defaultRequest:
+      cpu: "5m"
+      memory: "16Mi"
+    max:
+      cpu: "200m"
+      memory: "256Mi"
+    min:
+      cpu: "1m"
+      memory: "4Mi"
+    type: Container

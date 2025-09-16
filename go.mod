@@ -20,7 +20,6 @@ require (
 	k8s.io/apimachinery v0.33.3
 	k8s.io/apiserver v0.33.3
 	k8s.io/client-go v0.33.3
-	k8s.io/code-generator v0.33.3
 	k8s.io/component-base v0.33.3
 	k8s.io/component-helpers v0.33.3
 	k8s.io/klog/v2 v2.130.1
@@ -28,13 +27,14 @@ require (
 	k8s.io/kubernetes v1.33.3
 	k8s.io/utils v0.0.0-20241104100929-3ea5e8cea738
 	sigs.k8s.io/controller-runtime v0.20.4
-	sigs.k8s.io/logtools v0.9.0
 	sigs.k8s.io/security-profiles-operator v0.4.0
 	sigs.k8s.io/structured-merge-diff/v4 v4.6.0
-	sigs.k8s.io/yaml v1.4.0
 )
 
-require github.com/k8stopologyawareschedwg/podfingerprint v0.2.2 // indirect
+require (
+	github.com/k8stopologyawareschedwg/podfingerprint v0.2.2
+	sigs.k8s.io/yaml v1.4.0 // indirect
+)
 
 require (
 	cel.dev/expr v0.19.1 // indirect
@@ -111,7 +111,6 @@ require (
 	go.uber.org/zap v1.27.0 // indirect
 	golang.org/x/crypto v0.36.0 // indirect
 	golang.org/x/exp v0.0.0-20250103183323-7d7fa50e5329 // indirect
-	golang.org/x/mod v0.22.0 // indirect
 	golang.org/x/net v0.38.0 // indirect
 	golang.org/x/oauth2 v0.27.0 // indirect
 	golang.org/x/sync v0.12.0 // indirect
@@ -119,7 +118,6 @@ require (
 	golang.org/x/term v0.30.0 // indirect
 	golang.org/x/text v0.23.0 // indirect
 	golang.org/x/time v0.9.0 // indirect
-	golang.org/x/tools v0.28.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.4.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20241209162323-e6fa225c2576 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250102185135-69823020774d // indirect
@@ -135,7 +133,6 @@ require (
 	k8s.io/controller-manager v0.33.3 // indirect
 	k8s.io/csi-translation-lib v0.32.5 // indirect
 	k8s.io/dynamic-resource-allocation v0.32.5 // indirect
-	k8s.io/gengo/v2 v2.0.0-20250207200755-1244d31929d7 // indirect
 	k8s.io/kms v0.33.3 // indirect
 	k8s.io/kube-openapi v0.0.0-20250318190949-c8a335a9a2ff // indirect
 	k8s.io/kubelet v0.33.3 // indirect
@@ -186,4 +183,5 @@ replace k8s.io/sample-cli-plugin => k8s.io/sample-cli-plugin v0.33.3
 replace k8s.io/sample-controller => k8s.io/sample-controller v0.33.3
 
 replace sigs.k8s.io/scheduler-plugins/test/util => ./test/util
+
 replace sigs.k8s.io/scheduler-plugins/test/integration => ./test/integration

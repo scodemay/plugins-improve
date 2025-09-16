@@ -1,0 +1,47 @@
+=== 基准指标数据 - 2025年 09月 16日 星期二 09:58:20 CST ===
+
+节点信息:
+NAME                             STATUS   ROLES           AGE     VERSION   INTERNAL-IP   EXTERNAL-IP   OS-IMAGE                         KERNEL-VERSION     CONTAINER-RUNTIME
+scheduler-stable-control-plane   Ready    control-plane   5d18h   v1.31.0   172.18.0.4    <none>        Debian GNU/Linux 12 (bookworm)   6.8.0-78-generic   containerd://1.7.18
+scheduler-stable-worker          Ready    <none>          5d18h   v1.31.0   172.18.0.2    <none>        Debian GNU/Linux 12 (bookworm)   6.8.0-78-generic   containerd://1.7.18
+scheduler-stable-worker2         Ready    <none>          5d18h   v1.31.0   172.18.0.5    <none>        Debian GNU/Linux 12 (bookworm)   6.8.0-78-generic   containerd://1.7.18
+scheduler-stable-worker3         Ready    <none>          5d18h   v1.31.0   172.18.0.3    <none>        Debian GNU/Linux 12 (bookworm)   6.8.0-78-generic   containerd://1.7.18
+
+节点资源使用情况:
+NAME                             CPU(cores)   CPU%   MEMORY(bytes)   MEMORY%   
+scheduler-stable-control-plane   285m         4%     807Mi           10%       
+scheduler-stable-worker          61m          1%     625Mi           7%        
+scheduler-stable-worker2         56m          0%     403Mi           5%        
+scheduler-stable-worker3         71m          1%     349Mi           4%        
+
+现有Pod分布:
+NAMESPACE            NAME                                                     READY   STATUS             RESTARTS      AGE     IP             NODE                             NOMINATED NODE   READINESS GATES
+load-test-small      cpu-intensive-app-5db66dff84-47zxt                       0/1     ImagePullBackOff   0             15h     10.244.2.51    scheduler-stable-worker3         <none>           <none>
+load-test-small      cpu-intensive-app-5db66dff84-5rkff                       0/1     ImagePullBackOff   0             15h     10.244.3.10    scheduler-stable-worker          <none>           <none>
+load-test-small      cpu-intensive-app-5db66dff84-c2gcf                       0/1     ImagePullBackOff   0             15h     10.244.2.54    scheduler-stable-worker3         <none>           <none>
+load-test-small      cpu-intensive-app-5db66dff84-hqhzr                       0/1     ImagePullBackOff   0             15h     10.244.1.223   scheduler-stable-worker2         <none>           <none>
+load-test-small      cpu-intensive-app-5db66dff84-jtqjt                       0/1     ImagePullBackOff   0             15h     10.244.1.224   scheduler-stable-worker2         <none>           <none>
+load-test-small      idle-app-ccfd575ff-b7vsb                                 1/1     Running            0             15h     10.244.3.9     scheduler-stable-worker          <none>           <none>
+load-test-small      idle-app-ccfd575ff-m8r5v                                 1/1     Running            0             15h     10.244.1.226   scheduler-stable-worker2         <none>           <none>
+load-test-small      idle-app-ccfd575ff-nww67                                 1/1     Running            0             15h     10.244.2.58    scheduler-stable-worker3         <none>           <none>
+load-test-small      idle-app-ccfd575ff-sw44z                                 1/1     Running            0             15h     10.244.2.53    scheduler-stable-worker3         <none>           <none>
+load-test-small      idle-app-ccfd575ff-thldw                                 1/1     Running            0             15h     10.244.1.222   scheduler-stable-worker2         <none>           <none>
+load-test-small      memory-intensive-app-7fb7f948d-67cwj                     0/1     ImagePullBackOff   0             15h     10.244.2.57    scheduler-stable-worker3         <none>           <none>
+load-test-small      memory-intensive-app-7fb7f948d-6rx57                     0/1     ImagePullBackOff   0             15h     10.244.1.227   scheduler-stable-worker2         <none>           <none>
+load-test-small      memory-intensive-app-7fb7f948d-gjsnn                     0/1     ImagePullBackOff   0             15h     10.244.3.8     scheduler-stable-worker          <none>           <none>
+load-test-small      memory-intensive-app-7fb7f948d-qr7xk                     0/1     ImagePullBackOff   0             15h     10.244.2.55    scheduler-stable-worker3         <none>           <none>
+load-test-small      memory-intensive-app-7fb7f948d-zlznc                     0/1     ErrImagePull       0             15h     10.244.1.228   scheduler-stable-worker2         <none>           <none>
+load-test-small      web-service-app-7578cc7c7f-4pm5c                         1/1     Running            0             15h     10.244.1.221   scheduler-stable-worker2         <none>           <none>
+load-test-small      web-service-app-7578cc7c7f-ddwl9                         1/1     Running            0             15h     10.244.3.11    scheduler-stable-worker          <none>           <none>
+load-test-small      web-service-app-7578cc7c7f-pz87h                         1/1     Running            0             15h     10.244.1.225   scheduler-stable-worker2         <none>           <none>
+load-test-small      web-service-app-7578cc7c7f-wcv4l                         1/1     Running            0             15h     10.244.2.52    scheduler-stable-worker3         <none>           <none>
+
+调度器状态:
+etcd-scheduler-stable-control-plane                      1/1     Running   0             21h
+kube-apiserver-scheduler-stable-control-plane            1/1     Running   0             21h
+kube-controller-manager-scheduler-stable-control-plane   1/1     Running   8 (21h ago)   5d18h
+kube-scheduler-scheduler-stable-control-plane            1/1     Running   8 (21h ago)   5d18h
+rescheduler-scheduler-c5959b854-98thk                    1/1     Running   9 (21h ago)   3d17h
+
+Rescheduler状态:
+kube-system          rescheduler-scheduler-c5959b854-98thk                    1/1     Running            9 (21h ago)   3d17h
