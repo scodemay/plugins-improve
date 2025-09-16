@@ -19,6 +19,48 @@ WEB_SERVICE_NAME="plugin-web-ui"
 API_PORT=8080
 WEB_PORT=3000
 
+# 检查端口是否被占用
+check_port() {
+    local port=$1
+    if command -v netstat >/dev/null 2>&1; then
+        if netstat -tuln | grep -q ":$port "; then
+            return 1  # 端口被占用
+        fi
+    elif command -v ss >/dev/null 2>&1; then
+        if ss -tuln | grep -q ":$port "; then
+            return 1  # 端口被占用
+        fi
+    elif command -v lsof >/dev/null 2>&1; then
+        if lsof -i :$port >/dev/null 2>&1; then
+            return 1  # 端口被占用
+        fi
+    fi
+    return 0  # 端口可用
+}
+
+# 查找可用端口
+find_available_port() {
+    local start_port=$1
+    local port=$start_port
+    
+    while ! check_port $port; do
+        port=$((port + 1))
+        if [ $port -gt $((start_port + 100)) ]; then
+            echo -e "${RED}错误: 无法找到可用端口 (从 $start_port 开始)${NC}"
+            exit 1
+        fi
+    done
+    
+    echo $port
+}
+
+# 推送镜像到控制平面节点
+push_image_to_nodes() {
+    local image_name=$1
+    echo -e "${YELLOW}镜像 $image_name 已构建完成，将使用 imagePullPolicy: IfNotPresent${NC}"
+    echo -e "${YELLOW}请确保镜像在Kubernetes节点上可用${NC}"
+}
+
 echo -e "${BLUE}=== 部署Kubernetes调度器插件管理系统 ===${NC}"
 echo ""
 
@@ -66,11 +108,21 @@ FROM python:3.9-slim
 
 WORKDIR /app
 
-# 安装依赖
+# 安装系统依赖
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装kubectl
+RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
+    && chmod +x kubectl \
+    && mv kubectl /usr/local/bin/
+
+# 安装Python依赖
 RUN pip install flask flask-cors pyyaml
 
 # 复制脚本
-COPY plugin-config-api.py .
+COPY scripts/plugin-config-api.py .
 
 # 设置权限
 RUN chmod +x plugin-config-api.py
@@ -97,7 +149,7 @@ build_web_image() {
 FROM nginx:alpine
 
 # 复制HTML文件
-COPY plugin-web-ui.html /usr/share/nginx/html/index.html
+COPY scripts/plugin-web-ui.html /usr/share/nginx/html/index.html
 
 # 创建nginx配置
 RUN echo 'server { \
@@ -151,6 +203,7 @@ spec:
       containers:
       - name: api
         image: plugin-config-api:latest
+        imagePullPolicy: Never
         ports:
         - containerPort: 8080
         env:
@@ -226,6 +279,7 @@ spec:
       containers:
       - name: web
         image: plugin-web-ui:latest
+        imagePullPolicy: Never
         ports:
         - containerPort: 3000
         resources:
@@ -319,11 +373,11 @@ wait_for_deployment() {
     
     # 等待API服务
     echo "等待API服务启动..."
-    kubectl wait --for=condition=available --timeout=300s deployment/$API_SERVICE_NAME -n $NAMESPACE
+    kubectl wait --for=condition=available --timeout=120s deployment/$API_SERVICE_NAME -n $NAMESPACE
     
     # 等待Web界面
     echo "等待Web界面启动..."
-    kubectl wait --for=condition=available --timeout=300s deployment/$WEB_SERVICE_NAME -n $NAMESPACE
+    kubectl wait --for=condition=available --timeout=120s deployment/$WEB_SERVICE_NAME -n $NAMESPACE
     
     echo -e "${GREEN}✓ 所有服务启动完成${NC}"
 }
@@ -334,17 +388,22 @@ show_access_info() {
     echo ""
     
     # 获取NodePort
-    local web_port=$(kubectl get service $WEB_SERVICE_NAME -n $NAMESPACE -o jsonpath='{.spec.ports[0].nodePort}')
-    local api_port=$(kubectl get service $API_SERVICE_NAME -n $NAMESPACE -o jsonpath='{.spec.ports[0].nodePort}')
+    local web_nodeport=$(kubectl get service $WEB_SERVICE_NAME -n $NAMESPACE -o jsonpath='{.spec.ports[0].nodePort}')
+    local api_nodeport=$(kubectl get service $API_SERVICE_NAME -n $NAMESPACE -o jsonpath='{.spec.ports[0].nodePort}')
     
     echo -e "${GREEN}访问信息:${NC}"
-    echo "Web界面: http://localhost:$web_port"
-    echo "API服务: http://localhost:$api_port"
+    echo "Web界面 (NodePort): http://localhost:$web_nodeport"
+    echo "API服务 (NodePort): http://localhost:$api_nodeport"
     echo ""
     
     echo -e "${YELLOW}端口转发命令:${NC}"
     echo "kubectl port-forward -n $NAMESPACE service/$WEB_SERVICE_NAME $WEB_PORT:3000"
     echo "kubectl port-forward -n $NAMESPACE service/$API_SERVICE_NAME $API_PORT:8080"
+    echo ""
+    
+    echo -e "${GREEN}本地访问地址:${NC}"
+    echo "Web界面: http://localhost:$WEB_PORT"
+    echo "API服务: http://localhost:$API_PORT"
     echo ""
     
     echo -e "${YELLOW}管理命令:${NC}"
@@ -374,27 +433,45 @@ main() {
     # 1. 检查依赖
     check_dependencies
     
-    # 2. 创建命名空间
+    # 2. 检查端口占用并调整
+    echo -e "${YELLOW}检查端口占用情况...${NC}"
+    if ! check_port $WEB_PORT; then
+        echo -e "${YELLOW}端口 $WEB_PORT 被占用，正在查找可用端口...${NC}"
+        WEB_PORT=$(find_available_port $WEB_PORT)
+        echo -e "${GREEN}✓ 使用端口 $WEB_PORT${NC}"
+    else
+        echo -e "${GREEN}✓ 端口 $WEB_PORT 可用${NC}"
+    fi
+    
+    if ! check_port $API_PORT; then
+        echo -e "${YELLOW}端口 $API_PORT 被占用，正在查找可用端口...${NC}"
+        API_PORT=$(find_available_port $API_PORT)
+        echo -e "${GREEN}✓ 使用端口 $API_PORT${NC}"
+    else
+        echo -e "${GREEN}✓ 端口 $API_PORT 可用${NC}"
+    fi
+    
+    # 3. 创建命名空间
     create_namespace
     
-    # 3. 构建镜像
+    # 4. 构建镜像
     build_api_image
     build_web_image
     
-    # 4. 创建RBAC资源
+    # 5. 创建RBAC资源
     create_rbac
     
-    # 5. 创建部署
+    # 6. 创建部署
     create_api_deployment
     create_web_deployment
     
-    # 6. 等待部署完成
+    # 7. 等待部署完成
     wait_for_deployment
     
-    # 7. 显示访问信息
+    # 8. 显示访问信息
     show_access_info
     
-    # 8. 清理临时文件
+    # 9. 清理临时文件
     cleanup
     
     echo -e "${GREEN}🎉 插件管理系统部署完成！${NC}"
