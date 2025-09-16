@@ -7,17 +7,22 @@ data:
   collect-enhanced-metrics.sh: |
     #!/bin/sh
     while true; do
-      echo "# Enhanced rescheduler metrics with node type separation" > /tmp/metrics.prom
+      echo "# Enhanced rescheduler metrics with node type separation and resource metrics" > /tmp/metrics.prom
       echo "# HELP rescheduler_node_pods_count Pods per node with node type labels" >> /tmp/metrics.prom
       echo "# TYPE rescheduler_node_pods_count gauge" >> /tmp/metrics.prom
       
       # 临时文件用于存储节点数据
       TEMP_FILE="/tmp/node_data.tmp"
+      RESOURCE_FILE="/tmp/resource_data.tmp"
       
       # 获取Pod分布并分类节点类型（包括所有命名空间）
       kubectl get pods --all-namespaces -o wide --no-headers 2>/dev/null | \
       awk '$4=="Running" && NF>=8 && length($8)>5 && $8!="<none>" {print $8}' | \
       grep "scheduler-stable" | sort | uniq -c > $TEMP_FILE
+      
+      # 获取节点资源使用情况
+      kubectl top nodes --no-headers 2>/dev/null | \
+      awk 'NF>=5 {print $1, $3, $5}' > $RESOURCE_FILE
       
       # 初始化计数器
       worker_total=0
@@ -43,6 +48,38 @@ data:
         fi
       done < $TEMP_FILE
       
+      # 添加资源使用率指标
+      echo "" >> /tmp/metrics.prom
+      echo "# HELP rescheduler_node_cpu_usage_percent CPU usage percentage per node" >> /tmp/metrics.prom
+      echo "# TYPE rescheduler_node_cpu_usage_percent gauge" >> /tmp/metrics.prom
+      echo "# HELP rescheduler_node_memory_usage_percent Memory usage percentage per node" >> /tmp/metrics.prom
+      echo "# TYPE rescheduler_node_memory_usage_percent gauge" >> /tmp/metrics.prom
+      
+      # 处理资源使用情况
+      while read node cpu_usage memory_usage; do
+        if echo "$node" | grep -q "scheduler-stable"; then
+          # 提取CPU使用率百分比（去掉%符号）
+          cpu_percent=$(echo "$cpu_usage" | sed 's/%//' | sed 's/m//')
+          # 提取内存使用率百分比（去掉%符号）
+          memory_percent=$(echo "$memory_usage" | sed 's/%//' | sed 's/Mi//')
+          
+          # 确定节点类型
+          if echo "$node" | grep -q "control-plane"; then
+            node_type="control-plane"
+            role="master"
+          elif echo "$node" | grep -q "worker"; then
+            node_type="worker"
+            role="worker"
+          else
+            node_type="other"
+            role="unknown"
+          fi
+          
+          echo "rescheduler_node_cpu_usage_percent{node_name=\"$node\",node_type=\"$node_type\",role=\"$role\"} $cpu_percent" >> /tmp/metrics.prom
+          echo "rescheduler_node_memory_usage_percent{node_name=\"$node\",node_type=\"$node_type\",role=\"$role\"} $memory_percent" >> /tmp/metrics.prom
+        fi
+      done < $RESOURCE_FILE
+      
       # 添加汇总指标
       echo "" >> /tmp/metrics.prom
       echo "# HELP rescheduler_worker_nodes_total Total worker nodes" >> /tmp/metrics.prom
@@ -65,10 +102,42 @@ data:
         echo "rescheduler_worker_pods_avg $worker_avg" >> /tmp/metrics.prom
       fi
       
-      # 清理临时文件
-      rm -f $TEMP_FILE
+      # 添加资源汇总指标
+      echo "" >> /tmp/metrics.prom
+      echo "# HELP rescheduler_worker_cpu_avg Average CPU usage on worker nodes" >> /tmp/metrics.prom
+      echo "# TYPE rescheduler_worker_cpu_avg gauge" >> /tmp/metrics.prom
+      echo "# HELP rescheduler_worker_memory_avg Average memory usage on worker nodes" >> /tmp/metrics.prom
+      echo "# TYPE rescheduler_worker_memory_avg gauge" >> /tmp/metrics.prom
       
-      echo "$(date): Updated enhanced metrics - Workers: $worker_count nodes, $worker_total pods; Control-plane: $control_count nodes, $control_total pods"
+      # 计算worker节点平均资源使用率
+      worker_cpu_total=0
+      worker_memory_total=0
+      worker_resource_count=0
+      
+      while read node cpu_usage memory_usage; do
+        if echo "$node" | grep -q "scheduler-stable.*worker"; then
+          cpu_percent=$(echo "$cpu_usage" | sed 's/%//' | sed 's/m//')
+          memory_percent=$(echo "$memory_usage" | sed 's/%//' | sed 's/Mi//')
+          
+          if [ -n "$cpu_percent" ] && [ "$cpu_percent" != "" ]; then
+            worker_cpu_total=$(echo "$worker_cpu_total + $cpu_percent" | bc 2>/dev/null || echo "$worker_cpu_total")
+            worker_memory_total=$(echo "$worker_memory_total + $memory_percent" | bc 2>/dev/null || echo "$worker_memory_total")
+            worker_resource_count=$((worker_resource_count + 1))
+          fi
+        fi
+      done < $RESOURCE_FILE
+      
+      if [ $worker_resource_count -gt 0 ]; then
+        worker_cpu_avg=$(echo "scale=2; $worker_cpu_total / $worker_resource_count" | bc 2>/dev/null || echo "0")
+        worker_memory_avg=$(echo "scale=2; $worker_memory_total / $worker_resource_count" | bc 2>/dev/null || echo "0")
+        echo "rescheduler_worker_cpu_avg $worker_cpu_avg" >> /tmp/metrics.prom
+        echo "rescheduler_worker_memory_avg $worker_memory_avg" >> /tmp/metrics.prom
+      fi
+      
+      # 清理临时文件
+      rm -f $TEMP_FILE $RESOURCE_FILE
+      
+      echo "$(date): Updated enhanced metrics with resources - Workers: $worker_count nodes, $worker_total pods; Control-plane: $control_count nodes, $control_total pods"
       sleep 15
     done &
 

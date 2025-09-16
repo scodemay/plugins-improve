@@ -22,14 +22,16 @@ import (
 
 const (
 	// 控制器配置
-	DefaultReschedulingInterval = 30 * time.Second
-	DefaultImbalanceThreshold   = 20.0 // 负载不均衡阈值
-	MaxReschedulingPods         = 10   // 单次最大重调度Pod数量
+	DefaultReschedulingInterval       = 30 * time.Second
+	DefaultImbalanceThreshold         = 20.0 // 负载不均衡阈值
+	DefaultPodCountImbalanceThreshold = 20   // Pod数量不均衡阈值
+	MaxReschedulingPods               = 10   // 单次最大重调度Pod数量
 
 	// 重调度原因
 	ReasonLoadBalancing        = "LoadBalancing"
 	ReasonResourceOptimization = "ResourceOptimization"
 	ReasonNodeMaintenance      = "NodeMaintenance"
+	ReasonPodCountBalancing    = "PodCountBalancing"
 )
 
 // ReschedulingController 重调度控制器
@@ -232,15 +234,19 @@ func (c *ReschedulingController) getNodeMetrics(ctx context.Context) ([]NodeMetr
 func (c *ReschedulingController) analyzeAndDecide(ctx context.Context, metrics []NodeMetrics) []ReschedulingDecision {
 	var decisions []ReschedulingDecision
 
-	// 1. 负载均衡分析
+	// 1. 负载均衡分析（基于资源使用率）
 	loadBalanceDecisions := c.analyzeLoadBalance(ctx, metrics)
 	decisions = append(decisions, loadBalanceDecisions...)
 
-	// 2. 资源优化分析
+	// 2. Pod数量不均衡分析
+	podCountDecisions := c.analyzePodCountImbalance(ctx, metrics)
+	decisions = append(decisions, podCountDecisions...)
+
+	// 3. 资源优化分析
 	resourceOptDecisions := c.analyzeResourceOptimization(ctx, metrics)
 	decisions = append(decisions, resourceOptDecisions...)
 
-	// 3. 节点维护分析
+	// 4. 节点维护分析
 	maintenanceDecisions := c.analyzeNodeMaintenance(ctx, metrics)
 	decisions = append(decisions, maintenanceDecisions...)
 
@@ -295,6 +301,106 @@ func (c *ReschedulingController) analyzeLoadBalance(ctx context.Context, metrics
 			Strategy:   ReasonLoadBalancing,
 		})
 	}
+
+	return decisions
+}
+
+// analyzePodCountImbalance Pod数量不均衡分析
+func (c *ReschedulingController) analyzePodCountImbalance(ctx context.Context, metrics []NodeMetrics) []ReschedulingDecision {
+	// 获取所有节点的Pod数量
+	nodePodCounts := make(map[string]int)
+
+	// 获取所有Pod
+	pods, err := c.podLister.List(labels.Everything())
+	if err != nil {
+		c.logger.Error(err, "获取Pod列表失败")
+		return nil
+	}
+
+	// 统计每个节点的Pod数量
+	for _, pod := range pods {
+		if pod.Status.Phase != v1.PodRunning || pod.Spec.NodeName == "" {
+			continue
+		}
+
+		// 排除系统命名空间
+		if c.isExcludedNamespace(pod.Namespace) {
+			continue
+		}
+
+		nodePodCounts[pod.Spec.NodeName]++
+	}
+
+	// 只考虑工作节点
+	var workerNodeCounts []struct {
+		nodeName string
+		podCount int
+	}
+
+	for _, metric := range metrics {
+		if podCount, exists := nodePodCounts[metric.NodeName]; exists {
+			workerNodeCounts = append(workerNodeCounts, struct {
+				nodeName string
+				podCount int
+			}{metric.NodeName, podCount})
+		}
+	}
+
+	if len(workerNodeCounts) < 2 {
+		c.logger.V(3).Info("工作节点数量不足，跳过Pod数量不均衡分析", "节点数", len(workerNodeCounts))
+		return nil
+	}
+
+	// 按Pod数量排序
+	sort.Slice(workerNodeCounts, func(i, j int) bool {
+		return workerNodeCounts[i].podCount > workerNodeCounts[j].podCount
+	})
+
+	highest := workerNodeCounts[0]
+	lowest := workerNodeCounts[len(workerNodeCounts)-1]
+
+	// 检查Pod数量不均衡（差异超过20个Pod）
+	podImbalance := highest.podCount - lowest.podCount
+	if podImbalance < DefaultPodCountImbalanceThreshold {
+		c.logger.V(3).Info("Pod数量分布均衡",
+			"imbalance", podImbalance,
+			"threshold", DefaultPodCountImbalanceThreshold,
+			"highestNode", highest.nodeName, "highestCount", highest.podCount,
+			"lowestNode", lowest.nodeName, "lowestCount", lowest.podCount)
+		return nil
+	}
+
+	c.logger.Info("发现Pod数量不均衡",
+		"highNode", highest.nodeName, "highPodCount", highest.podCount,
+		"lowNode", lowest.nodeName, "lowPodCount", lowest.podCount,
+		"imbalance", podImbalance,
+		"threshold", DefaultPodCountImbalanceThreshold)
+
+	// 找到可以从高Pod数量节点迁移的Pod
+	candidatePods := c.findMigratablePods(ctx, highest.nodeName)
+	if len(candidatePods) == 0 {
+		c.logger.V(2).Info("高Pod数量节点没有可迁移的Pod", "node", highest.nodeName)
+		return nil
+	}
+
+	var decisions []ReschedulingDecision
+	// 选择1-3个Pod进行迁移
+	migrateCount := min(3, len(candidatePods))
+	for i := 0; i < migrateCount; i++ {
+		decisions = append(decisions, ReschedulingDecision{
+			Pod:        candidatePods[i],
+			SourceNode: highest.nodeName,
+			TargetNode: lowest.nodeName,
+			Reason:     fmt.Sprintf("Pod数量均衡：源节点%d个Pod → 目标节点%d个Pod (差异%d个)", highest.podCount, lowest.podCount, podImbalance),
+			Strategy:   ReasonPodCountBalancing,
+		})
+	}
+
+	c.logger.Info("Pod数量不均衡重调度决策生成完成",
+		"sourceNode", highest.nodeName,
+		"targetNode", lowest.nodeName,
+		"migrateCount", migrateCount,
+		"totalCandidates", len(candidatePods))
 
 	return decisions
 }
